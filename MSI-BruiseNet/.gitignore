@@ -1,0 +1,23 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+
+# Virtual env
+.venv/
+venv/
+
+# Data and outputs
+data/images/
+data/masks/
+outputs/
+*.npy
+
+# Logs and checkpoints
+*.pth
+*.pt
+runs/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
