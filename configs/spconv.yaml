@@ -1,0 +1,50 @@
+# +1D-SpConv: MobileNetV2-UNet with spectral 1D convolution after S1
+experiment_name: "spconv"
+
+model:
+  num_classes: 2
+  encoder_pretrained: true
+  skip_module: "none"
+  use_spectral_conv: true
+  spectral_conv_kernel_size: 3
+
+data:
+  data_dir: "data"
+  image_dir: "images"
+  mask_dir: "masks"
+  num_channels: 9
+  num_classes: 2
+  image_size: 512
+  crop_size: 384
+
+train:
+  batch_size: 4
+  num_epochs: 200
+  optimizer: "adamw"
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  eta_min: 1.0e-6
+  loss: "ce_dice"
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  dice_weight: 0.5
+  ce_weight: 0.5
+
+  augment:
+    horizontal_flip: true
+    vertical_flip: true
+    random_rotation: true
+    elastic_transform: false
+    gaussian_noise: false
+    gaussian_noise_std: 0.01
+
+  val_interval: 1
+  save_interval: 50
+  num_workers: 4
+  pin_memory: true
+
+eval:
+  visualize: true
+  num_vis_samples: 10
+  vis_bands: [0, 4, 8]
