@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .modules import SEBlock, ConvGLU
+# [CHANGED] Added CBAMBlock import for the "+CBAM" ablation variant
+from .modules import SEBlock, CBAMBlock, ConvGLU
 
 
 class ConvBNReLU(nn.Module):
@@ -29,14 +30,15 @@ class DecoderBlock(nn.Module):
     The optional module inserted after concat depends on config:
         - "none": standard double convolution
         - "se": SE block after concat, before convolutions
+        - "cbam": CBAM block after concat, before convolutions  [NEW]
         - "convglu": ConvGLU replaces the double Conv-BN-ReLU block
 
     Args:
         in_channels: Channels from upsampled feature (before concat).
         skip_channels: Channels from skip connection.
         out_channels: Output channels for this decoder level.
-        skip_module: Module type — "none", "se", or "convglu".
-        se_reduction: SE reduction ratio (only used if skip_module="se").
+        skip_module: Module type — "none", "se", "cbam", or "convglu".
+        se_reduction: SE/CBAM reduction ratio (used if skip_module="se" or "cbam").
         convglu_expansion: ConvGLU expansion ratio (only used if skip_module="convglu").
     """
 
@@ -49,6 +51,11 @@ class DecoderBlock(nn.Module):
 
         if skip_module == "se":
             self.se = SEBlock(concat_channels, reduction=se_reduction)
+            self.conv1 = ConvBNReLU(concat_channels, out_channels)
+            self.conv2 = ConvBNReLU(out_channels, out_channels)
+        elif skip_module == "cbam":
+            # [NEW] CBAM: channel + spatial attention at skip connections
+            self.cbam = CBAMBlock(concat_channels, reduction=se_reduction)
             self.conv1 = ConvBNReLU(concat_channels, out_channels)
             self.conv2 = ConvBNReLU(out_channels, out_channels)
         elif skip_module == "convglu":
@@ -75,6 +82,11 @@ class DecoderBlock(nn.Module):
             x = self.se(x)
             x = self.conv1(x)
             x = self.conv2(x)
+        elif self.skip_module_type == "cbam":
+            # [NEW] CBAM: channel attn -> spatial attn -> double conv
+            x = self.cbam(x)
+            x = self.conv1(x)
+            x = self.conv2(x)
         elif self.skip_module_type == "convglu":
             x = self.convglu(x)
         else:
@@ -97,14 +109,16 @@ class UNetDecoder(nn.Module):
         encoder_channels: List of encoder output channels [16, 24, 32, 96, 320].
         decoder_channels: List of decoder output channels [128, 64, 32, 16].
         num_classes: Number of segmentation classes.
-        skip_module: Module type for skip connections.
-        se_reduction: SE reduction ratio.
+        skip_module: Module type for skip connections ("none", "se", "cbam", "convglu").
+        se_reduction: SE/CBAM reduction ratio.
         convglu_expansion: ConvGLU expansion ratio.
+        bottleneck_channels: If ASPP is used upstream, this overrides encoder_channels[4].
+            E.g., ASPP(320 -> 256) means bottleneck_channels=256. [NEW]
     """
 
     def __init__(self, encoder_channels=None, decoder_channels=None,
                  num_classes=2, skip_module="none", se_reduction=16,
-                 convglu_expansion=4):
+                 convglu_expansion=4, bottleneck_channels=None):
 
         super().__init__()
 
@@ -113,12 +127,16 @@ class UNetDecoder(nn.Module):
         if decoder_channels is None:
             decoder_channels = [128, 64, 32, 16]
 
-        # S5(320) is bottleneck, S4(96)..S1(16) are skip connections
-        # D4: 320 + 96 -> 128
+        # [CHANGED] If ASPP transforms bottleneck channels, use the new value
+        # instead of encoder_channels[4] (original 320).
+        bottleneck = bottleneck_channels if bottleneck_channels else encoder_channels[4]
+
+        # S5(320 or ASPP out) is bottleneck, S4(96)..S1(16) are skip connections
+        # D4: bottleneck + 96 -> 128
         # D3: 128 + 32 -> 64
         # D2:  64 + 24 -> 32
         # D1:  32 + 16 -> 16
-        in_ch = [encoder_channels[4], decoder_channels[0], decoder_channels[1], decoder_channels[2]]
+        in_ch = [bottleneck, decoder_channels[0], decoder_channels[1], decoder_channels[2]]
         skip_ch = [encoder_channels[3], encoder_channels[2], encoder_channels[1], encoder_channels[0]]
 
         self.blocks = nn.ModuleList()
