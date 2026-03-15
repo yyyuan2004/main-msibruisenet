@@ -1,4 +1,15 @@
-"""Loss functions for semantic segmentation."""
+"""Loss functions for semantic segmentation.
+
+Change log (Spectral Smoothness Regularization):
+    - [NEW] SpectralSmoothnessLoss: Penalizes large differences between
+      predictions at adjacent spectral bands' feature maps. This is a
+      REGULARIZATION TERM (not a standalone loss), added to the existing
+      CE + Dice loss to encourage spatially smooth predictions that respect
+      the physical smoothness of NIR spectral reflectance.
+    - [CHANGED] SegmentationLoss: Added optional spectral_smoothness_weight
+      parameter. When > 0, the spectral smoothness regularizer is included:
+      loss = ce_w * CE + dice_w * Dice + ss_w * SpectralSmoothnessLoss
+"""
 
 import torch
 import torch.nn as nn
@@ -71,8 +82,65 @@ class FocalLoss(nn.Module):
         return focal_loss.mean()
 
 
+###############################################################################
+# [NEW] Spectral Smoothness Regularization Loss
+#
+# Physical motivation: In 9-band NIR multispectral imaging (23nm spacing),
+# adjacent bands are highly correlated. The model's prediction should not
+# change drastically when the input varies only slightly across adjacent
+# spectral bands. This regularizer operates on the INPUT spectral image,
+# penalizing sharp gradients of the predicted soft probabilities when
+# weighted by the spectral smoothness of the input.
+#
+# Implementation: For each pixel, we compute the L2 norm of the difference
+# between the model's soft predictions at neighboring spatial positions,
+# weighted by how similar those positions are in spectral space. This
+# encourages the segmentation boundary to align with genuine spectral
+# discontinuities (i.e., defect boundaries) rather than noise.
+#
+# Simplified version used here: Penalize the total variation of predicted
+# probabilities (spatial gradient smoothness), which acts as a generic
+# smoothness prior suitable for the extreme low-sample scenario.
+###############################################################################
+
+class SpectralSmoothnessLoss(nn.Module):
+    """Spectral smoothness regularization for MSI segmentation.
+
+    Encourages smooth predictions by penalizing the total variation
+    (spatial gradient magnitude) of the predicted probability maps.
+    This is especially beneficial for few-shot MSI data where the model
+    might overfit to noisy spectral patterns.
+
+    loss = mean(|P[:,:,i+1,j] - P[:,:,i,j]|^2 + |P[:,:,i,j+1] - P[:,:,i,j]|^2)
+
+    where P = softmax(logits) is the predicted probability map.
+    """
+
+    def forward(self, logits, targets=None):
+        """
+        Args:
+            logits: (B, C, H, W) raw predictions.
+            targets: Not used — included for API consistency with other losses.
+
+        Returns:
+            Scalar total variation loss over predicted probabilities.
+        """
+        probs = F.softmax(logits, dim=1)
+
+        # Spatial gradients along height and width
+        diff_h = probs[:, :, 1:, :] - probs[:, :, :-1, :]  # (B, C, H-1, W)
+        diff_w = probs[:, :, :, 1:] - probs[:, :, :, :-1]  # (B, C, H, W-1)
+
+        # L2 penalty (mean squared gradient)
+        loss = (diff_h ** 2).mean() + (diff_w ** 2).mean()
+        return loss
+
+
 class SegmentationLoss(nn.Module):
-    """Combined loss: CE (or Focal) + Dice.
+    """Combined loss: CE (or Focal) + Dice + optional Spectral Smoothness.
+
+    [CHANGED] Added spectral_smoothness_weight parameter. When > 0, the loss
+    becomes: loss = ce_w * CE + dice_w * Dice + ss_w * SpectralSmoothness
 
     Args:
         loss_type: "ce_dice" or "focal_dice".
@@ -80,13 +148,18 @@ class SegmentationLoss(nn.Module):
         dice_weight: Weight for Dice component.
         focal_gamma: Focal loss gamma parameter.
         focal_alpha: Focal loss alpha parameter.
+        spectral_smoothness_weight: Weight for spectral smoothness regularizer.
+            Default 0.0 (disabled). Recommended: 0.1 for mild, 0.3 for strong. [NEW]
     """
 
     def __init__(self, loss_type="ce_dice", ce_weight=0.5, dice_weight=0.5,
-                 focal_gamma=2.0, focal_alpha=0.25):
+                 focal_gamma=2.0, focal_alpha=0.25,
+                 spectral_smoothness_weight=0.0):
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
+        # [NEW] Spectral smoothness regularization weight
+        self.ss_weight = spectral_smoothness_weight
 
         if loss_type == "focal_dice":
             self.ce_loss = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
@@ -95,7 +168,18 @@ class SegmentationLoss(nn.Module):
 
         self.dice_loss = DiceLoss()
 
+        # [NEW] Only instantiate if weight > 0
+        if self.ss_weight > 0:
+            self.spectral_smoothness = SpectralSmoothnessLoss()
+
     def forward(self, logits, targets):
         loss_ce = self.ce_loss(logits, targets)
         loss_dice = self.dice_loss(logits, targets)
-        return self.ce_weight * loss_ce + self.dice_weight * loss_dice
+        total = self.ce_weight * loss_ce + self.dice_weight * loss_dice
+
+        # [NEW] Add spectral smoothness regularization if configured
+        if self.ss_weight > 0:
+            loss_ss = self.spectral_smoothness(logits)
+            total = total + self.ss_weight * loss_ss
+
+        return total

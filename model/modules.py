@@ -2,12 +2,23 @@
 
 Modules:
     - SE (Squeeze-and-Excitation): Channel attention via global average pooling.
+    - CBAM (Convolutional Block Attention Module): Channel + spatial attention.
+    - ASPP (Atrous Spatial Pyramid Pooling): Multi-scale context aggregation.
     - SpectralConv1D: 1D convolution along the spectral (band) dimension.
     - ConvGLU: Convolutional Gated Linear Unit — a channel mixer (NOT attention).
+
+Change log (ASPP/CBAM update):
+    - [NEW] CBAMBlock: channel attention (similar to SE) + spatial attention (conv on
+      max/avg-pooled spatial maps). Placed at each skip connection level in the decoder,
+      replacing SE in the "+CBAM" ablation variant.
+    - [NEW] ASPP: Atrous Spatial Pyramid Pooling with dilated rates {1, 6, 12, 18} +
+      global pooling branch. Placed between encoder bottleneck (S5) and decoder input.
+      Reduces 320ch -> 256ch (configurable).
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class SEBlock(nn.Module):
@@ -72,6 +83,176 @@ class SpectralConv1D(nn.Module):
         x_flat = x_flat.reshape(B, H * W, C).permute(0, 2, 1)  # (B, C, H*W)
         x_out = x_flat.view(B, C, H, W)
         return self.relu(self.bn(x_out + x))  # Residual connection
+
+
+###############################################################################
+# [NEW] CBAM — Convolutional Block Attention Module
+# Placed at every skip connection level in the decoder (similar position to SE).
+# Unlike SE which only does channel attention, CBAM adds spatial attention on top.
+#   1) Channel Attention: GAP + GMP -> shared MLP -> sigmoid -> channel-wise scale
+#   2) Spatial Attention: AvgPool(ch) + MaxPool(ch) -> Conv7x7 -> sigmoid -> spatial scale
+###############################################################################
+
+class ChannelAttention(nn.Module):
+    """Channel attention sub-module of CBAM.
+
+    Uses both average-pooled and max-pooled features through a shared MLP.
+
+    Args:
+        channels: Number of input/output channels.
+        reduction: Reduction ratio for the bottleneck.
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        mid = max(channels // reduction, 4)
+        self.mlp = nn.Sequential(
+            nn.Conv2d(channels, mid, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid, channels, 1, bias=False),
+        )
+
+    def forward(self, x):
+        avg_out = self.mlp(F.adaptive_avg_pool2d(x, 1))
+        max_out = self.mlp(F.adaptive_max_pool2d(x, 1))
+        return x * torch.sigmoid(avg_out + max_out)
+
+
+class SpatialAttention(nn.Module):
+    """Spatial attention sub-module of CBAM.
+
+    Applies Conv7x7 on channel-wise avg/max pooled feature maps.
+
+    Args:
+        kernel_size: Convolution kernel size (default 7).
+    """
+
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+
+    def forward(self, x):
+        avg_out = x.mean(dim=1, keepdim=True)       # (B, 1, H, W)
+        max_out = x.amax(dim=1, keepdim=True)        # (B, 1, H, W)
+        spatial = torch.cat([avg_out, max_out], dim=1)  # (B, 2, H, W)
+        return x * torch.sigmoid(self.conv(spatial))
+
+
+class CBAMBlock(nn.Module):
+    """CBAM: Channel Attention -> Spatial Attention (sequential).
+
+    Placed at skip connections in the decoder, same position as SE.
+    Compared to SE, CBAM adds spatial attention which helps localize
+    defect regions more precisely.
+
+    Args:
+        channels: Number of input/output channels.
+        reduction: Channel attention reduction ratio (default 16).
+        spatial_kernel: Spatial attention conv kernel size (default 7).
+    """
+
+    def __init__(self, channels, reduction=16, spatial_kernel=7):
+        super().__init__()
+        self.channel_attn = ChannelAttention(channels, reduction)
+        self.spatial_attn = SpatialAttention(spatial_kernel)
+
+    def forward(self, x):
+        x = self.channel_attn(x)  # Step 1: channel attention
+        x = self.spatial_attn(x)  # Step 2: spatial attention
+        return x
+
+
+###############################################################################
+# [NEW] ASPP — Atrous Spatial Pyramid Pooling
+# Placed between encoder bottleneck (S5, 320ch, 16x16) and decoder input.
+# Uses parallel dilated convolutions at rates {1, 6, 12, 18} + global pooling
+# to capture multi-scale contextual information.
+# Particularly useful for segmentation where defects vary in size.
+###############################################################################
+
+class ASPPConv(nn.Module):
+    """Single ASPP branch: dilated Conv3x3 -> BN -> ReLU."""
+
+    def __init__(self, in_channels, out_channels, dilation):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3,
+                      padding=dilation, dilation=dilation, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.conv(x)
+
+
+class ASPPPooling(nn.Module):
+    """ASPP global pooling branch: GAP -> Conv1x1 -> BN -> ReLU -> upsample."""
+
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        size = x.shape[2:]
+        x = self.conv(self.gap(x))
+        x = F.interpolate(x, size=size, mode="bilinear", align_corners=False)
+        # BN applied AFTER upsample to avoid batch_size=1 issue on (B,C,1,1)
+        return self.relu(self.bn(x))
+
+
+class ASPP(nn.Module):
+    """Atrous Spatial Pyramid Pooling module.
+
+    Aggregates 5 parallel branches:
+        - 1x1 conv (rate=1)
+        - 3x3 conv (rate=6)
+        - 3x3 conv (rate=12)
+        - 3x3 conv (rate=18)
+        - Global average pooling branch
+    Concatenate all -> 1x1 conv projection -> dropout.
+
+    Args:
+        in_channels: Input channels (encoder bottleneck, e.g. 320).
+        out_channels: Output channels after projection (e.g. 256).
+        atrous_rates: Tuple of dilation rates (default (6, 12, 18)).
+        dropout: Dropout rate after projection (default 0.5).
+    """
+
+    def __init__(self, in_channels=320, out_channels=256,
+                 atrous_rates=(6, 12, 18), dropout=0.5):
+        super().__init__()
+
+        modules = []
+        # Branch 1: 1x1 convolution (equivalent to dilation=1)
+        modules.append(nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        ))
+        # Branches 2-4: dilated 3x3 convolutions
+        for rate in atrous_rates:
+            modules.append(ASPPConv(in_channels, out_channels, rate))
+        # Branch 5: global average pooling
+        modules.append(ASPPPooling(in_channels, out_channels))
+
+        self.branches = nn.ModuleList(modules)
+
+        # Projection: concat 5 branches -> 1x1 conv
+        self.project = nn.Sequential(
+            nn.Conv2d(out_channels * 5, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        outputs = [branch(x) for branch in self.branches]
+        x = torch.cat(outputs, dim=1)
+        return self.project(x)
 
 
 class ConvGLU(nn.Module):
