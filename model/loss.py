@@ -1,14 +1,15 @@
 """Loss functions for semantic segmentation.
 
-Change log (Spectral Smoothness Regularization):
-    - [NEW] SpectralSmoothnessLoss: Penalizes large differences between
-      predictions at adjacent spectral bands' feature maps. This is a
-      REGULARIZATION TERM (not a standalone loss), added to the existing
-      CE + Dice loss to encourage spatially smooth predictions that respect
-      the physical smoothness of NIR spectral reflectance.
-    - [CHANGED] SegmentationLoss: Added optional spectral_smoothness_weight
-      parameter. When > 0, the spectral smoothness regularizer is included:
-      loss = ce_w * CE + dice_w * Dice + ss_w * SpectralSmoothnessLoss
+Change log:
+    - [v1] SpectralSmoothnessLoss: Total variation regularizer on predicted
+      probability maps. Encourages smooth predictions, suppresses noise.
+    - [v2 NEW] EdgePreservingLoss: 边缘感知正则。在GT边缘区域*最大化*预测梯度
+      幅值，鼓励模型保留清晰的缺陷边界。与SpectralSmoothnessLoss互补：
+        - SpectralSmoothnessLoss: 在平坦区域抑制噪声（最小化梯度）
+        - EdgePreservingLoss:    在边缘区域保留细节（最大化梯度）
+      两者结合 = 各向异性平滑（anisotropic smoothing）。
+    - [v2 CHANGED] SegmentationLoss: 总损失变为
+      loss = ce_w*CE + dice_w*Dice + ss_w*SpSmooth + edge_w*EdgePreserve
 """
 
 import torch
@@ -136,11 +137,72 @@ class SpectralSmoothnessLoss(nn.Module):
         return loss
 
 
-class SegmentationLoss(nn.Module):
-    """Combined loss: CE (or Focal) + Dice + optional Spectral Smoothness.
+###############################################################################
+# [NEW] Edge-Preserving Regularization Loss
+#
+# 来源: 改编自DualAnoDiff的边缘保持正则思想。
+# 原理: 从GT mask提取边缘区域（膨胀-腐蚀），在边缘像素处*最大化*预测概率图
+# 的空间梯度幅值。这迫使模型在缺陷边界处产生陡峭的置信度跳变，而非模糊过渡。
+#
+# 与SpectralSmoothnessLoss的互补关系:
+#   - SpectralSmoothnessLoss: 全局TV正则 → 平坦区域抑制噪声
+#   - EdgePreservingLoss: 边缘局部 → 保留清晰边界
+#   两者结合 = 各向异性平滑: 平坦处光滑，边缘处锐利。
+#
+# 实现: 不依赖形态学操作（避免引入额外依赖），直接用GT mask的空间梯度
+# 作为边缘指示器。GT梯度非零处即为边缘。
+###############################################################################
 
-    [CHANGED] Added spectral_smoothness_weight parameter. When > 0, the loss
-    becomes: loss = ce_w * CE + dice_w * Dice + ss_w * SpectralSmoothness
+class EdgePreservingLoss(nn.Module):
+    """Edge-preserving regularization: maximize prediction gradients at GT edges.
+
+    This loss extracts edges from the ground truth mask (via spatial gradient),
+    and MAXIMIZES the predicted probability gradient magnitude at those edges.
+    The result is sharper defect boundaries.
+
+    The loss is negative (we maximize gradients), so it's negated before returning.
+    """
+
+    def forward(self, logits, targets):
+        """
+        Args:
+            logits: (B, C, H, W) raw predictions.
+            targets: (B, H, W) integer class labels.
+
+        Returns:
+            Scalar edge-preserving loss (lower = sharper edges).
+        """
+        probs = F.softmax(logits, dim=1)
+
+        # --- Step 1: 从GT mask提取边缘指示图 ---
+        # targets的空间梯度: 类别标签变化处 = 边缘
+        targets_float = targets.float().unsqueeze(1)  # (B, 1, H, W)
+        edge_h = torch.abs(targets_float[:, :, 1:, :] - targets_float[:, :, :-1, :])
+        edge_w = torch.abs(targets_float[:, :, :, 1:] - targets_float[:, :, :, :-1])
+        # 二值化: 有梯度的地方就是边缘
+        edge_h = (edge_h > 0).float()  # (B, 1, H-1, W)
+        edge_w = (edge_w > 0).float()  # (B, 1, H, W-1)
+
+        # --- Step 2: 计算预测概率的空间梯度幅值 ---
+        grad_h = torch.abs(probs[:, :, 1:, :] - probs[:, :, :-1, :])  # (B, C, H-1, W)
+        grad_w = torch.abs(probs[:, :, :, 1:] - probs[:, :, :, :-1])  # (B, C, H, W-1)
+
+        # --- Step 3: 在边缘区域最大化梯度 ---
+        # edge_h/w: (B, 1, ...) 会broadcast到 (B, C, ...)
+        edge_grad_h = (grad_h * edge_h).sum() / (edge_h.sum() * probs.shape[1] + 1e-6)
+        edge_grad_w = (grad_w * edge_w).sum() / (edge_w.sum() * probs.shape[1] + 1e-6)
+
+        # 取负: 最大化梯度 = 最小化负梯度
+        return -(edge_grad_h + edge_grad_w)
+
+
+class SegmentationLoss(nn.Module):
+    """Combined loss: CE/Focal + Dice + SpectralSmoothnessLoss + EdgePreservingLoss.
+
+    [CHANGED v2] 总损失公式:
+        loss = ce_w * CE + dice_w * Dice
+             + ss_w * SpectralSmoothnessLoss    (平坦区域抑制噪声)
+             + edge_w * EdgePreservingLoss       (边缘区域保留细节)  [NEW]
 
     Args:
         loss_type: "ce_dice" or "focal_dice".
@@ -149,17 +211,22 @@ class SegmentationLoss(nn.Module):
         focal_gamma: Focal loss gamma parameter.
         focal_alpha: Focal loss alpha parameter.
         spectral_smoothness_weight: Weight for spectral smoothness regularizer.
-            Default 0.0 (disabled). Recommended: 0.1 for mild, 0.3 for strong. [NEW]
+            Default 0.0 (disabled). Recommended: 0.1 for mild regularization.
+        edge_preserve_weight: Weight for edge-preserving regularizer. [NEW]
+            Default 0.0 (disabled). Recommended: 0.05~0.1, too large causes
+            high-frequency artifacts, too small has no effect. Start with 0.05.
     """
 
     def __init__(self, loss_type="ce_dice", ce_weight=0.5, dice_weight=0.5,
                  focal_gamma=2.0, focal_alpha=0.25,
-                 spectral_smoothness_weight=0.0):
+                 spectral_smoothness_weight=0.0,
+                 edge_preserve_weight=0.0):
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
-        # [NEW] Spectral smoothness regularization weight
         self.ss_weight = spectral_smoothness_weight
+        # [NEW] 边缘感知正则权重
+        self.edge_weight = edge_preserve_weight
 
         if loss_type == "focal_dice":
             self.ce_loss = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
@@ -168,18 +235,26 @@ class SegmentationLoss(nn.Module):
 
         self.dice_loss = DiceLoss()
 
-        # [NEW] Only instantiate if weight > 0
         if self.ss_weight > 0:
             self.spectral_smoothness = SpectralSmoothnessLoss()
+
+        # [NEW] 边缘保持正则: 仅当权重>0时实例化
+        if self.edge_weight > 0:
+            self.edge_preserve = EdgePreservingLoss()
 
     def forward(self, logits, targets):
         loss_ce = self.ce_loss(logits, targets)
         loss_dice = self.dice_loss(logits, targets)
         total = self.ce_weight * loss_ce + self.dice_weight * loss_dice
 
-        # [NEW] Add spectral smoothness regularization if configured
+        # 光谱平滑正则: 平坦区域抑制噪声
         if self.ss_weight > 0:
             loss_ss = self.spectral_smoothness(logits)
             total = total + self.ss_weight * loss_ss
+
+        # [NEW] 边缘保持正则: 缺陷边界处保留清晰梯度
+        if self.edge_weight > 0:
+            loss_edge = self.edge_preserve(logits, targets)
+            total = total + self.edge_weight * loss_edge
 
         return total

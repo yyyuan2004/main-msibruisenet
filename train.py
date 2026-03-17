@@ -144,7 +144,8 @@ def train(cfg, seed, output_dir):
     print(f"Model: {cfg['experiment_name']} | Parameters: {param_count:.2f}M")
 
     # Loss
-    # [CHANGED] Added spectral_smoothness_weight passthrough for ASPP/CBAM configs
+    # [CHANGED v2] Added edge_preserve_weight for fused config
+    # 总loss = CE + Dice + SpectralSmoothnessLoss + EdgePreservingLoss
     criterion = SegmentationLoss(
         loss_type=train_cfg.get("loss", "ce_dice"),
         ce_weight=train_cfg.get("ce_weight", 0.5),
@@ -152,6 +153,7 @@ def train(cfg, seed, output_dir):
         focal_gamma=train_cfg.get("focal_gamma", 2.0),
         focal_alpha=train_cfg.get("focal_alpha", 0.25),
         spectral_smoothness_weight=train_cfg.get("spectral_smoothness_weight", 0.0),
+        edge_preserve_weight=train_cfg.get("edge_preserve_weight", 0.0),  # [NEW]
     )
 
     # Optimizer
