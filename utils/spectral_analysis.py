@@ -224,7 +224,7 @@ def analyze_3band_regression(normal_pixels, defect_pixels, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Spectral pre-analysis for MSI data")
-    parser.add_argument("--data_dir", type=str, default="data",
+    parser.add_argument("--data_dir", type=str, default="/home/yy/datasets/153",
                         help="Root data directory")
     parser.add_argument("--image_dir", type=str, default="images",
                         help="Subdirectory for spectral images")

@@ -10,7 +10,7 @@ model:
   spectral_conv_kernel_size: 3
 
 data:
-  data_dir: "data"
+  data_dir: "/home/yy/datasets/153"
   image_dir: "images"
   mask_dir: "masks"
   num_channels: 9
