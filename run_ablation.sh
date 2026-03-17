@@ -6,8 +6,8 @@
 
 set -e
 
-# [CHANGED] Added "aspp" and "cbam" to the ablation config list
-CONFIGS=("baseline" "se" "spconv" "convglu" "spconv_se" "aspp" "cbam")
+# [CHANGED] Added "aspp", "cbam", and "fused" to the ablation config list
+CONFIGS=("baseline" "se" "spconv" "convglu" "spconv_se" "aspp" "cbam" "fused")
 SEEDS=(42 123 456)
 
 echo "=============================================="

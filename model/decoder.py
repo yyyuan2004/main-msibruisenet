@@ -30,16 +30,21 @@ class DecoderBlock(nn.Module):
     The optional module inserted after concat depends on config:
         - "none": standard double convolution
         - "se": SE block after concat, before convolutions
-        - "cbam": CBAM block after concat, before convolutions  [NEW]
+        - "cbam": CBAM block after concat, before convolutions
         - "convglu": ConvGLU replaces the double Conv-BN-ReLU block
+        - "cbam_convglu": [NEW] CBAM attention -> ConvGLU channel mixing (fused)
+            设计动机: CBAM先做通道+空间注意力筛选（"看哪里"），
+            ConvGLU再做门控通道变换（"怎么融合"），两者串行、各司其职。
+            CBAM不改变通道数，只做注意力重标定；
+            ConvGLU负责通道降维和非线性混合。
 
     Args:
         in_channels: Channels from upsampled feature (before concat).
         skip_channels: Channels from skip connection.
         out_channels: Output channels for this decoder level.
-        skip_module: Module type — "none", "se", "cbam", or "convglu".
-        se_reduction: SE/CBAM reduction ratio (used if skip_module="se" or "cbam").
-        convglu_expansion: ConvGLU expansion ratio (only used if skip_module="convglu").
+        skip_module: Module type — "none", "se", "cbam", "convglu", or "cbam_convglu".
+        se_reduction: SE/CBAM reduction ratio (used if skip_module="se" or "cbam" or "cbam_convglu").
+        convglu_expansion: ConvGLU expansion ratio (only used if skip_module="convglu" or "cbam_convglu").
     """
 
     def __init__(self, in_channels, skip_channels, out_channels,
@@ -58,6 +63,15 @@ class DecoderBlock(nn.Module):
             self.cbam = CBAMBlock(concat_channels, reduction=se_reduction)
             self.conv1 = ConvBNReLU(concat_channels, out_channels)
             self.conv2 = ConvBNReLU(out_channels, out_channels)
+        elif skip_module == "cbam_convglu":
+            # [NEW] 融合模式: CBAM注意力筛选 → ConvGLU通道混合
+            # 数据流: concat(416ch) → CBAM(416→416, 注意力重标定)
+            #       → ConvGLU(416→128, 门控通道变换)
+            # CBAM负责"看哪里重要"（通道+空间注意力）
+            # ConvGLU负责"怎么融合"（GELU门控的通道降维+混合）
+            self.cbam = CBAMBlock(concat_channels, reduction=se_reduction)
+            self.convglu = ConvGLU(concat_channels, out_channels,
+                                   expansion_ratio=convglu_expansion)
         elif skip_module == "convglu":
             self.convglu = ConvGLU(concat_channels, out_channels,
                                    expansion_ratio=convglu_expansion)
@@ -87,6 +101,10 @@ class DecoderBlock(nn.Module):
             x = self.cbam(x)
             x = self.conv1(x)
             x = self.conv2(x)
+        elif self.skip_module_type == "cbam_convglu":
+            # [NEW] 融合执行: 先CBAM注意力，再ConvGLU通道混合
+            x = self.cbam(x)     # 注意力重标定（不改shape）
+            x = self.convglu(x)  # 门控通道变换（降维到out_channels）
         elif self.skip_module_type == "convglu":
             x = self.convglu(x)
         else:
