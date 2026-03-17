@@ -185,8 +185,13 @@ def train(cfg, seed, output_dir):
 
     best_miou = 0.0
     best_epoch = 0
+    # Early stopping: 连续 patience 个epoch mIoU无提升则停止训练
+    patience = train_cfg.get("early_stopping_patience", 0)  # 0=禁用
+    no_improve_count = 0
 
     print(f"\nStarting training for {train_cfg['num_epochs']} epochs...")
+    if patience > 0:
+        print(f"Early stopping enabled: patience={patience} epochs")
     for epoch in range(1, train_cfg["num_epochs"] + 1):
         t0 = time.time()
 
@@ -217,10 +222,11 @@ def train(cfg, seed, output_dir):
                   f"LR: {optimizer.param_groups[0]['lr']:.2e} | "
                   f"Time: {elapsed:.1f}s")
 
-        # Save best model
+        # Save best model + early stopping check
         if miou > best_miou:
             best_miou = miou
             best_epoch = epoch
+            no_improve_count = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
@@ -228,6 +234,14 @@ def train(cfg, seed, output_dir):
                 "best_miou": best_miou,
                 "config": cfg,
             }, os.path.join(ckpt_dir, "best_model.pth"))
+        else:
+            no_improve_count += 1
+
+        if patience > 0 and no_improve_count >= patience:
+            print(f"\nEarly stopping at epoch {epoch}: "
+                  f"mIoU未提升已达 {patience} epochs. "
+                  f"Best mIoU: {best_miou:.4f} at epoch {best_epoch}")
+            break
 
         # Periodic checkpoints
         save_interval = train_cfg.get("save_interval", 50)
