@@ -156,20 +156,24 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
 
 
 def print_results(results, experiment_name):
-    """Pretty-print evaluation results."""
+    """Pretty-print evaluation results. Primary metric: Class 1 (defect) IoU."""
+    iou_per_class = results["IoU_per_class"]
+    defect_iou = float(iou_per_class[1]) if len(iou_per_class) > 1 else 0.0
+
     print(f"\n{'=' * 60}")
     print(f"Evaluation Results: {experiment_name}")
     print(f"{'=' * 60}")
-    print(f"  mIoU:           {results['mIoU']:.4f}")
-    print(f"  F1 (macro):     {results['F1_macro']:.4f}")
-    print(f"  Precision (macro): {results['Precision_macro']:.4f}")
-    print(f"  Recall (macro):    {results['Recall_macro']:.4f}")
+    print(f"  IoU (defect, class 1): {defect_iou:.4f}  <-- primary metric")
+    print(f"  F1 (macro):            {results['F1_macro']:.4f}")
+    print(f"  Precision (macro):     {results['Precision_macro']:.4f}")
+    print(f"  Recall (macro):        {results['Recall_macro']:.4f}")
 
     if "IoU_per_class" in results:
         print(f"\n  Per-class metrics:")
-        num_classes = len(results["IoU_per_class"])
+        num_classes = len(iou_per_class)
         for c in range(num_classes):
-            print(f"    Class {c}: IoU={results['IoU_per_class'][c]:.4f} | "
+            label = "bg" if c == 0 else "defect"
+            print(f"    Class {c} ({label}): IoU={iou_per_class[c]:.4f} | "
                   f"F1={results['F1_per_class'][c]:.4f} | "
                   f"Prec={results['Precision_per_class'][c]:.4f} | "
                   f"Rec={results['Recall_per_class'][c]:.4f}")
