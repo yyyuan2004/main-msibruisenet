@@ -1,109 +1,119 @@
-"""Full model assembly: MobileNetV2 encoder + UNet decoder + optional modules."""
+"""Full model assembly: Encoder + UNet decoder + optional modules.
+
+Supports two encoder backends (via config `encoder_name`):
+    - "mobilenetv2": MobileNetV2, channels [16,24,32,96,320], stride down to 1/32
+    - "efficientnet_b0": EfficientNet-B0, channels [16,24,40,112,1280], stride down to 1/16
+
+The decoder channel widths auto-adapt to the encoder's output channels.
+All other components (ASPP, skip modules, SpectralConv1D) work with both encoders.
+"""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .encoder import MobileNetV2Encoder
+from .encoder import MobileNetV2Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-# [CHANGED] Added ASPP import for bottleneck multi-scale feature aggregation
 from .modules import SpectralConv1D, ASPP
 
 
-class MobileNetV2UNet(nn.Module):
-    """MobileNetV2-UNet for pixel-level semantic segmentation of MSI data.
+# Encoder registry: name -> class
+ENCODERS = {
+    "mobilenetv2": MobileNetV2Encoder,
+    "efficientnet_b0": EfficientNetB0Encoder,
+}
 
-    Configurable skip connection modules for ablation study:
-        - baseline: No enhancement modules
-        - +SE: SE block at each skip connection
-        - +CBAM: CBAM block at each skip connection                [NEW]
-        - +1D-SpConv: Spectral 1D conv after encoder S1
-        - +ConvGLU: ConvGLU replacing Conv-BN-ReLU at skip connections
-        - +1D-SpConv+SE: Combination of spectral conv and SE
-        - +ASPP: ASPP at bottleneck (between encoder and decoder)  [NEW]
+
+class SegmentationModel(nn.Module):
+    """Encoder-UNet segmentation model for MSI data.
+
+    Configurable components:
+        - Encoder: MobileNetV2 or EfficientNet-B0 (via encoder_name)
+        - Skip modules: none / se / cbam / convglu / cbam_convglu
+        - ASPP at bottleneck (optional)
+        - SpectralConv1D after S1 (optional)
 
     Args:
         num_classes: Number of segmentation classes.
         in_channels: Number of input spectral bands (default 9).
+        encoder_name: "mobilenetv2" or "efficientnet_b0".
         pretrained: Use ImageNet pretrained encoder weights.
-        skip_module: "none", "se", "cbam", or "convglu".
+        skip_module: Skip connection module type.
         se_reduction: SE/CBAM reduction ratio.
         convglu_expansion: ConvGLU expansion ratio.
-        use_spectral_conv: Whether to insert SpectralConv1D after S1.
-        spectral_conv_kernel_size: Kernel size for spectral 1D conv.
-        use_aspp: Whether to insert ASPP at bottleneck (between S5 and decoder). [NEW]
-        aspp_out_channels: ASPP output channels (default 256).                   [NEW]
-        aspp_atrous_rates: ASPP dilation rates (default (6, 12, 18)).            [NEW]
-        aspp_dropout: ASPP dropout rate (default 0.5).                           [NEW]
+        use_spectral_conv: Insert SpectralConv1D after S1.
+        spectral_conv_kernel_size: SpectralConv1D kernel size.
+        use_aspp: Insert ASPP at bottleneck.
+        aspp_out_channels: ASPP output channels.
+        aspp_atrous_rates: ASPP dilation rates.
+        aspp_dropout: ASPP dropout rate.
     """
 
-    def __init__(self, num_classes=2, in_channels=9, pretrained=True,
+    def __init__(self, num_classes=2, in_channels=9,
+                 encoder_name="efficientnet_b0", pretrained=True,
                  skip_module="none", se_reduction=16, convglu_expansion=4,
                  use_spectral_conv=False, spectral_conv_kernel_size=3,
                  use_aspp=False, aspp_out_channels=256,
                  aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5):
         super().__init__()
 
-        self.encoder = MobileNetV2Encoder(
+        # Build encoder
+        encoder_cls = ENCODERS.get(encoder_name)
+        if encoder_cls is None:
+            raise ValueError(
+                f"Unknown encoder '{encoder_name}'. "
+                f"Available: {list(ENCODERS.keys())}"
+            )
+        self.encoder = encoder_cls(
             in_channels=in_channels, pretrained=pretrained
         )
 
-        # Optional spectral conv after S1 (16 channels at stride 1/2)
+        enc_channels = self.encoder.get_output_channels()
+        # e.g. MobileNetV2: [16, 24, 32, 96, 320]
+        # e.g. EfficientNet-B0: [16, 24, 40, 112, 1280]
+
+        # Optional spectral conv after S1
         self.use_spectral_conv = use_spectral_conv
         if use_spectral_conv:
-            # S1 output has 16 channels
             self.spectral_conv = SpectralConv1D(
-                num_channels=16,
+                num_channels=enc_channels[0],  # S1 channels (16 for both)
                 kernel_size=spectral_conv_kernel_size
             )
 
-        # [NEW] Optional ASPP at encoder bottleneck (S5)
-        # Placed between encoder output (320ch, 16x16) and decoder input.
-        # Transforms 320 -> aspp_out_channels via multi-scale dilated convolutions.
-        enc_channels = self.encoder.get_output_channels()
+        # Optional ASPP at bottleneck (S5)
         self.use_aspp = use_aspp
         bottleneck_channels = None
         if use_aspp:
             self.aspp = ASPP(
-                in_channels=enc_channels[4],  # 320
+                in_channels=enc_channels[4],
                 out_channels=aspp_out_channels,
                 atrous_rates=aspp_atrous_rates,
                 dropout=aspp_dropout,
             )
-            bottleneck_channels = aspp_out_channels  # decoder sees ASPP output, not 320
+            bottleneck_channels = aspp_out_channels
 
+        # Decoder — auto-adapts to encoder's channel widths
         self.decoder = UNetDecoder(
             encoder_channels=enc_channels,
             num_classes=num_classes,
             skip_module=skip_module,
             se_reduction=se_reduction,
             convglu_expansion=convglu_expansion,
-            bottleneck_channels=bottleneck_channels,  # [NEW] pass ASPP output dim
+            bottleneck_channels=bottleneck_channels,
         )
 
     def forward(self, x):
-        """
-        Args:
-            x: Input tensor (B, 9, H, W).
-
-        Returns:
-            Logits of shape (B, num_classes, H, W) — upsampled to input resolution.
-        """
         input_size = x.shape[2:]
 
         features = self.encoder(x)  # [S1, S2, S3, S4, S5]
 
-        # Apply spectral conv after S1 if configured
         if self.use_spectral_conv:
             features[0] = self.spectral_conv(features[0])
 
-        # [NEW] Apply ASPP at bottleneck (S5) if configured
-        # ASPP transforms S5 from 320ch to aspp_out_channels (e.g. 256)
-        # before the decoder consumes it. This captures multi-scale context.
         if self.use_aspp:
             features[4] = self.aspp(features[4])
 
-        logits = self.decoder(features)  # (B, C, H/2, W/2)
+        logits = self.decoder(features)
 
         # Upsample to input resolution
         logits = F.interpolate(logits, size=input_size, mode="bilinear",
@@ -112,27 +122,29 @@ class MobileNetV2UNet(nn.Module):
         return logits
 
 
+# Backward-compatible alias
+MobileNetV2UNet = SegmentationModel
+
+
 def build_model(cfg):
     """Build model from config dict.
 
-    Args:
-        cfg: Configuration dictionary.
-
-    Returns:
-        MobileNetV2UNet model instance.
+    Config fields used:
+        model.encoder_name: "mobilenetv2" or "efficientnet_b0" (default "efficientnet_b0")
+        model.num_classes, model.skip_module, model.use_aspp, etc.
     """
     model_cfg = cfg["model"]
 
-    model = MobileNetV2UNet(
+    model = SegmentationModel(
         num_classes=model_cfg.get("num_classes", 2),
         in_channels=cfg["data"].get("num_channels", 9),
+        encoder_name=model_cfg.get("encoder_name", "efficientnet_b0"),
         pretrained=model_cfg.get("encoder_pretrained", True),
         skip_module=model_cfg.get("skip_module", "none"),
         se_reduction=model_cfg.get("se_reduction", 16),
         convglu_expansion=model_cfg.get("convglu_expansion_ratio", 4),
         use_spectral_conv=model_cfg.get("use_spectral_conv", False),
         spectral_conv_kernel_size=model_cfg.get("spectral_conv_kernel_size", 3),
-        # [NEW] ASPP configuration — inserted at encoder bottleneck
         use_aspp=model_cfg.get("use_aspp", False),
         aspp_out_channels=model_cfg.get("aspp_out_channels", 256),
         aspp_atrous_rates=tuple(model_cfg.get("aspp_atrous_rates", [6, 12, 18])),

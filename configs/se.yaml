@@ -1,8 +1,9 @@
-# +SE: MobileNetV2-UNet with SE modules at skip connections
+# +SE: EfficientNet-B0-UNet with SE modules at skip connections
 experiment_name: "se"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "se"
   se_reduction: 16

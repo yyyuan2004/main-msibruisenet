@@ -1,9 +1,9 @@
-# +ASPP: MobileNetV2-UNet with ASPP at bottleneck + Spectral Smoothness Regularization
+# +ASPP: EfficientNet-B0-UNet with ASPP at bottleneck + Spectral Smoothness Regularization
 #
 # [NEW CONFIG] ASPP (Atrous Spatial Pyramid Pooling) is inserted between the
-# MobileNetV2 encoder bottleneck (S5, 320ch, 16x16) and the UNet decoder.
+# EfficientNet-B0 encoder bottleneck (S5, 1280ch, 32x32) and the UNet decoder.
 # It uses parallel dilated convolutions at rates {1, 6, 12, 18} + global pooling
-# to capture multi-scale contextual information, transforming 320ch -> 256ch.
+# to capture multi-scale contextual information, transforming 1280ch -> 256ch.
 #
 # Additionally, Spectral Smoothness Regularization is enabled (weight=0.1)
 # to encourage spatially smooth predictions that respect NIR spectral continuity.
@@ -14,12 +14,13 @@ experiment_name: "aspp"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "none"                # No attention module at skip connections
   use_spectral_conv: false
   # --- ASPP configuration (NEW) ---
   use_aspp: true                     # [NEW] Enable ASPP at bottleneck
-  aspp_out_channels: 256             # [NEW] ASPP output channels (320 -> 256)
+  aspp_out_channels: 256             # [NEW] ASPP output channels (1280 -> 256)
   aspp_atrous_rates: [6, 12, 18]     # [NEW] Dilation rates for ASPP branches
   aspp_dropout: 0.5                  # [NEW] Dropout after ASPP projection
 

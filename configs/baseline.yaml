@@ -1,8 +1,9 @@
-# Baseline: MobileNetV2-UNet without any enhancement modules
+# Baseline: EfficientNet-B0-UNet without any enhancement modules
 experiment_name: "baseline"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   # Skip connection enhancement module: none / se / convglu
   skip_module: "none"

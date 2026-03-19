@@ -1,8 +1,9 @@
-# +1D-SpConv: MobileNetV2-UNet with spectral 1D convolution after S1
+# +1D-SpConv: EfficientNet-B0-UNet with spectral 1D convolution after S1
 experiment_name: "spconv"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "none"
   use_spectral_conv: true
