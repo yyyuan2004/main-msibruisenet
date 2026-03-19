@@ -185,8 +185,13 @@ def train(cfg, seed, output_dir):
 
     best_miou = 0.0
     best_epoch = 0
+    # Early stopping: 连续 patience 个epoch mIoU无提升则停止训练
+    patience = train_cfg.get("early_stopping_patience", 0)  # 0=禁用
+    no_improve_count = 0
 
     print(f"\nStarting training for {train_cfg['num_epochs']} epochs...")
+    if patience > 0:
+        print(f"Early stopping enabled: patience={patience} epochs")
     for epoch in range(1, train_cfg["num_epochs"] + 1):
         t0 = time.time()
 
@@ -200,12 +205,15 @@ def train(cfg, seed, output_dir):
         scheduler.step()
 
         miou = val_results["mIoU"]
+        # 用 class 1 (缺陷类) 的 IoU 作为主指标，而非 mIoU
+        defect_iou = float(val_results["IoU_per_class"][1])
         elapsed = time.time() - t0
 
         # Log to TensorBoard
         writer.add_scalar("train/loss", train_loss, epoch)
         writer.add_scalar("val/loss", val_loss, epoch)
         writer.add_scalar("val/mIoU", miou, epoch)
+        writer.add_scalar("val/IoU_class1", defect_iou, epoch)
         writer.add_scalar("val/F1_macro", val_results["F1_macro"], epoch)
         writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
 
@@ -213,14 +221,15 @@ def train(cfg, seed, output_dir):
         if epoch % 10 == 0 or epoch == 1:
             print(f"Epoch {epoch:03d}/{train_cfg['num_epochs']} | "
                   f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                  f"mIoU: {miou:.4f} | F1: {val_results['F1_macro']:.4f} | "
+                  f"IoU(defect): {defect_iou:.4f} | F1: {val_results['F1_macro']:.4f} | "
                   f"LR: {optimizer.param_groups[0]['lr']:.2e} | "
                   f"Time: {elapsed:.1f}s")
 
-        # Save best model
-        if miou > best_miou:
-            best_miou = miou
+        # Save best model + early stopping check (以 class1 IoU 为判据)
+        if defect_iou > best_miou:
+            best_miou = defect_iou
             best_epoch = epoch
+            no_improve_count = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
@@ -228,6 +237,14 @@ def train(cfg, seed, output_dir):
                 "best_miou": best_miou,
                 "config": cfg,
             }, os.path.join(ckpt_dir, "best_model.pth"))
+        else:
+            no_improve_count += 1
+
+        if patience > 0 and no_improve_count >= patience:
+            print(f"\nEarly stopping at epoch {epoch}: "
+                  f"IoU(defect)未提升已达 {patience} epochs. "
+                  f"Best IoU(defect): {best_miou:.4f} at epoch {best_epoch}")
+            break
 
         # Periodic checkpoints
         save_interval = train_cfg.get("save_interval", 50)
@@ -251,7 +268,7 @@ def train(cfg, seed, output_dir):
 
     writer.close()
 
-    print(f"\nTraining complete. Best mIoU: {best_miou:.4f} at epoch {best_epoch}")
+    print(f"\nTraining complete. Best IoU(defect): {best_miou:.4f} at epoch {best_epoch}")
     print(f"Checkpoints saved to: {ckpt_dir}")
 
     # Return info for ablation summary

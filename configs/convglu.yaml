@@ -1,8 +1,9 @@
-# +ConvGLU: MobileNetV2-UNet with ConvGLU replacing Conv-BN-ReLU at skip connections
+# +ConvGLU: EfficientNet-B0-UNet with ConvGLU replacing Conv-BN-ReLU at skip connections
 experiment_name: "convglu"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "convglu"
   convglu_expansion_ratio: 4

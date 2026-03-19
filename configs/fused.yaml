@@ -6,11 +6,11 @@
 #
 #   ┌────────────────────────────────────────────────────────────────┐
 #   │ 第1层: ASPP @ Bottleneck（宏观尺度感知）                       │
-#   │   位置: Encoder S5 (320ch, 16x16) → Decoder 入口               │
+#   │   位置: Encoder S5 (1280ch, 32x32) → Decoder 入口               │
 #   │   作用: 用空洞卷积(rate=1/6/12/18)+全局池化捕获多尺度上下文      │
 #   │   意义: 苹果缺陷大小不一（微小碰伤 vs 大面积压伤），ASPP让       │
 #   │         bottleneck同时看到局部细节和全局上下文                    │
-#   │   通道变化: 320ch → 256ch                                      │
+#   │   通道变化: 1280ch → 256ch                                      │
 #   ├────────────────────────────────────────────────────────────────┤
 #   │ 第2层: CBAM→ConvGLU @ 每层跳跃连接（注意力+通道混合）            │
 #   │   位置: Decoder每级的Concat之后                                 │
@@ -40,6 +40,7 @@ experiment_name: "fused"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
 
   # --- 第2层: CBAM→ConvGLU 融合跳跃连接 ---
@@ -53,7 +54,7 @@ model:
 
   # --- 第1层: ASPP 多尺度上下文 ---
   use_aspp: true                     # Encoder bottleneck处插入ASPP
-  aspp_out_channels: 256             # 320 → 256
+  aspp_out_channels: 256             # 1280 → 256
   aspp_atrous_rates: [6, 12, 18]     # 空洞率: 小/中/大感受野
   aspp_dropout: 0.5                  # ASPP投影层dropout（防过拟合）
 

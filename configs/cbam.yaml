@@ -1,4 +1,4 @@
-# +CBAM: MobileNetV2-UNet with CBAM at skip connections + Spectral Smoothness Regularization
+# +CBAM: EfficientNet-B0-UNet with CBAM at skip connections + Spectral Smoothness Regularization
 #
 # [NEW CONFIG] CBAM (Convolutional Block Attention Module) replaces SE at each
 # skip connection level in the UNet decoder. Compared to SE (channel-only attention),
@@ -16,6 +16,7 @@ experiment_name: "cbam"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "cbam"                # [NEW] CBAM at each decoder skip connection
   se_reduction: 16                   # Shared reduction ratio for CBAM channel attn

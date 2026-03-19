@@ -1,8 +1,9 @@
-# +1D-SpConv+SE: MobileNetV2-UNet with spectral conv after S1 + SE at skip connections
+# +1D-SpConv+SE: EfficientNet-B0-UNet with spectral conv after S1 + SE at skip connections
 experiment_name: "spconv_se"
 
 model:
   num_classes: 2
+  encoder_name: "efficientnet_b0"
   encoder_pretrained: true
   skip_module: "se"
   se_reduction: 16
