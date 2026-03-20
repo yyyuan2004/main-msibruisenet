@@ -1,0 +1,116 @@
+# =============================================================================
+# Semi-supervised: Strong-Weak Mean Teacher
+# =============================================================================
+#
+# 半监督训练框架 (Mean Teacher with Strong-Weak Augmentation):
+#
+#   ┌─────────────────────────────────────────────────────────────────────┐
+#   │ 监督分支 (Supervised Branch)                                       │
+#   │   真实标注数据 → 标准增强 → Student → L_sup (CE + Dice)            │
+#   ├─────────────────────────────────────────────────────────────────────┤
+#   │ 无监督分支 (Unsupervised Branch)                                   │
+#   │   无标签数据 ──┬── 弱增强 → Teacher(EMA) → 伪标签 (τ=0.80 过滤)   │
+#   │               └── 强增强 → Student     → 预测                     │
+#   │   L_unsup = CE(Student预测, Teacher过滤伪标签)                     │
+#   ├─────────────────────────────────────────────────────────────────────┤
+#   │ 总损失: L_total = L_sup + λ_u(t) * L_unsup                       │
+#   │ λ_u(t): 高斯预热，前30个epoch从0 → 1.0逐渐增加                    │
+#   ├─────────────────────────────────────────────────────────────────────┤
+#   │ EMA更新: Teacher = 0.999 * Teacher + 0.001 * Student (每step)     │
+#   └─────────────────────────────────────────────────────────────────────┘
+#
+# 使用方法:
+#   1. 先用 train.py + baseline/fused config 训练出一个初始模型
+#   2. 将最佳checkpoint路径填入 semi.pretrained_checkpoint
+#   3. 将生成的无标签数据放入 semi.unlabeled_dir 目录
+#   4. 运行: python train_semi.py --config configs/semi.yaml --seed 42
+
+experiment_name: "semi_mean_teacher"
+
+model:
+  num_classes: 2
+  encoder_name: "efficientnet_b0"
+  encoder_pretrained: true
+
+  # 使用fused配置的增强模块组合 (最佳baseline)
+  skip_module: "cbam_convglu"
+  se_reduction: 16
+  convglu_expansion_ratio: 4
+
+  use_spectral_conv: false
+
+  use_aspp: true
+  aspp_out_channels: 256
+  aspp_atrous_rates: [6, 12, 18]
+  aspp_dropout: 0.5
+
+data:
+  data_dir: "/home/yy/datasets/153"
+  image_dir: "images"
+  mask_dir: "masks"
+  num_channels: 9
+  num_classes: 2
+  image_size: 512
+  crop_size: 384
+
+# ---- 半监督配置 ----
+semi:
+  # EMA衰减率: 越大Teacher越稳定，越小跟踪Student越快
+  # 0.999 ≈ Teacher在~1000步后"忘记"旧权重
+  ema_decay: 0.999
+
+  # 伪标签置信度阈值: 只采纳Teacher预测概率>τ的像素
+  # 太低(0.5)→噪声伪标签, 太高(0.95)→可用像素太少
+  pseudo_threshold: 0.80
+
+  # 无监督loss最大权重
+  lambda_u_max: 1.0
+
+  # Gaussian ramp-up: 前N个epoch λ_u从0逐渐增长到lambda_u_max
+  # 确保Student先从真实标注学到稳定特征，再利用伪标签泛化
+  rampup_epochs: 30
+
+  # 无标签数据目录 (与data_dir格式一致，内含images/子目录)
+  # 如果为空或目录不存在，则退化为纯监督训练
+  unlabeled_dir: "/home/yy/datasets/153_unlabeled"
+  unlabeled_image_dir: "images"
+
+  # 预训练checkpoint路径 (warm start，来自第一阶段baseline训练)
+  # 建议使用fused config训练的best_model.pth作为起点
+  pretrained_checkpoint: ""
+
+train:
+  batch_size: 4
+  num_epochs: 200
+  optimizer: "adamw"
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  eta_min: 1.0e-6
+
+  loss: "ce_dice"
+  ce_weight: 0.5
+  dice_weight: 0.5
+  spectral_smoothness_weight: 0.1
+  edge_preserve_weight: 0.05
+
+  # 早停: 以 class1 IoU 为判据
+  early_stopping_patience: 30
+
+  augment:
+    horizontal_flip: true
+    vertical_flip: true
+    random_rotation: true
+    elastic_transform: false
+    gaussian_noise: false
+    gaussian_noise_std: 0.01
+
+  val_interval: 1
+  save_interval: 50
+  num_workers: 4
+  pin_memory: true
+
+eval:
+  visualize: true
+  num_vis_samples: 10
+  vis_bands: [0, 4, 8]

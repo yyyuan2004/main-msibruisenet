@@ -119,6 +119,107 @@ class ElasticTransform:
         return warped_image, warped_mask
 
 
+class Cutout:
+    """Random rectangular erasing (Cutout) for strong augmentation.
+
+    Randomly erases a rectangular region of the image, filling it with zeros.
+    The mask is NOT modified (label information is preserved).
+
+    Args:
+        num_holes: Number of rectangular patches to erase.
+        max_h_size: Maximum height of erased patch (fraction of image H).
+        max_w_size: Maximum width of erased patch (fraction of image W).
+        p: Probability of applying cutout.
+    """
+
+    def __init__(self, num_holes=1, max_h_frac=0.3, max_w_frac=0.3, p=0.5):
+        self.num_holes = num_holes
+        self.max_h_frac = max_h_frac
+        self.max_w_frac = max_w_frac
+        self.p = p
+
+    def __call__(self, image, mask):
+        if np.random.random() >= self.p:
+            return image, mask
+
+        image = image.copy()
+        _, h, w = image.shape
+
+        for _ in range(self.num_holes):
+            cut_h = int(h * np.random.uniform(0.1, self.max_h_frac))
+            cut_w = int(w * np.random.uniform(0.1, self.max_w_frac))
+
+            cy = np.random.randint(0, h)
+            cx = np.random.randint(0, w)
+
+            y1 = max(0, cy - cut_h // 2)
+            y2 = min(h, cy + cut_h // 2)
+            x1 = max(0, cx - cut_w // 2)
+            x2 = min(w, cx + cut_w // 2)
+
+            image[:, y1:y2, x1:x2] = 0.0
+
+        return image, mask
+
+
+class GaussianBlur:
+    """Apply Gaussian blur to the spectral image (strong augmentation).
+
+    Args:
+        kernel_range: Range of kernel sizes (must be odd numbers).
+        sigma_range: Range of sigma values.
+        p: Probability of applying blur.
+    """
+
+    def __init__(self, kernel_range=(3, 7), sigma_range=(0.5, 2.0), p=0.5):
+        self.kernel_range = kernel_range
+        self.sigma_range = sigma_range
+        self.p = p
+
+    def __call__(self, image, mask):
+        if np.random.random() >= self.p:
+            return image, mask
+
+        # Pick random odd kernel size
+        k = np.random.choice(range(self.kernel_range[0], self.kernel_range[1] + 1, 2))
+        sigma = np.random.uniform(*self.sigma_range)
+
+        blurred = np.stack([
+            cv2.GaussianBlur(image[c], (k, k), sigma)
+            for c in range(image.shape[0])
+        ], axis=0)
+
+        return blurred, mask
+
+
+class IntensityJitter:
+    """Random per-channel intensity scaling (strong augmentation for MSI).
+
+    Unlike RGB brightness/contrast jitter, this applies independent per-band
+    scaling to simulate spectral response variations while keeping physical
+    meaning roughly intact.
+
+    Args:
+        scale_range: (min_scale, max_scale) for per-channel multiplicative jitter.
+        p: Probability of applying.
+    """
+
+    def __init__(self, scale_range=(0.8, 1.2), p=0.5):
+        self.scale_range = scale_range
+        self.p = p
+
+    def __call__(self, image, mask):
+        if np.random.random() >= self.p:
+            return image, mask
+
+        c = image.shape[0]
+        scales = np.random.uniform(
+            self.scale_range[0], self.scale_range[1], size=(c, 1, 1)
+        ).astype(np.float32)
+        image = image * scales
+        return image, mask
+
+
 class GaussianNoise:
     """Add small Gaussian noise to the spectral image."""
 
@@ -199,6 +300,53 @@ def get_val_transforms(cfg):
     # Otherwise just pass through
     if crop_size < cfg["data"]["image_size"]:
         transforms.append(CenterCrop(crop_size))
+    return Compose(transforms)
+
+
+def get_weak_transforms(cfg):
+    """Build weak augmentation pipeline for Mean Teacher (Teacher branch).
+
+    Weak augmentation: only spatial flips + rotation (no destructive transforms).
+    Used for generating high-quality pseudo-labels from the Teacher model.
+    """
+    crop_size = cfg["data"].get("crop_size", cfg["data"]["image_size"])
+
+    transforms = [
+        RandomHorizontalFlip(p=0.5),
+        RandomVerticalFlip(p=0.5),
+        RandomRotation90(),
+    ]
+
+    if crop_size < cfg["data"]["image_size"]:
+        transforms.append(RandomCrop(crop_size))
+
+    return Compose(transforms)
+
+
+def get_strong_transforms(cfg):
+    """Build strong augmentation pipeline for Mean Teacher (Student branch).
+
+    Strong augmentation: spatial flips/rotation + destructive transforms
+    (cutout, blur, intensity jitter, elastic deformation, noise).
+    Forces the Student to learn robust features despite heavy perturbation.
+    """
+    crop_size = cfg["data"].get("crop_size", cfg["data"]["image_size"])
+
+    transforms = [
+        RandomHorizontalFlip(p=0.5),
+        RandomVerticalFlip(p=0.5),
+        RandomRotation90(),
+        # Destructive transforms
+        Cutout(num_holes=2, max_h_frac=0.3, max_w_frac=0.3, p=0.5),
+        GaussianBlur(kernel_range=(3, 7), sigma_range=(0.5, 2.0), p=0.3),
+        IntensityJitter(scale_range=(0.8, 1.2), p=0.5),
+        ElasticTransform(alpha=50, sigma=7, p=0.3),
+        GaussianNoise(std=0.02, p=0.3),
+    ]
+
+    if crop_size < cfg["data"]["image_size"]:
+        transforms.append(RandomCrop(crop_size))
+
     return Compose(transforms)
 
 
