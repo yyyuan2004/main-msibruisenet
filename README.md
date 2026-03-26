@@ -84,7 +84,7 @@ pip install -r requirements.txt
 ### 2. Run Spectral Pre-analysis
 
 ```bash
-python utils/spectral_analysis.py --data_dir /home/yy/datasets/153 --output_dir outputs/spectral_analysis
+python -m utils.spectral_analysis --data_dir /home/yy/datasets/153 --output_dir outputs/spectral_analysis
 ```
 
 ### 3. Train a Single Configuration
