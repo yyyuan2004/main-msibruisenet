@@ -256,6 +256,27 @@ def main():
     model = build_model(cfg).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
+    # Band attention weight analysis (if model uses BandAttention)
+    if hasattr(model, 'band_attention'):
+        weights = model.band_attention.get_weights()
+        print("\nLearned band importance weights:")
+        for i, w in enumerate(weights):
+            bar = "#" * int(w * 40)
+            print(f"  Band {i+1}: {w:.4f}  {bar}")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.bar(range(1, len(weights) + 1), weights, color='steelblue')
+        ax.set_xlabel('Band Index')
+        ax.set_ylabel('Learned Weight (sigmoid)')
+        ax.set_title('Band Importance (learned by BandAttention)')
+        ax.set_xticks(range(1, len(weights) + 1))
+        ax.set_ylim(0, 1)
+        fig.tight_layout()
+        band_fig_path = os.path.join(args.output_dir, "band_weights.png")
+        fig.savefig(band_fig_path, dpi=150)
+        plt.close(fig)
+        print(f"Saved band importance figure to {band_fig_path}\n")
+
     # Metrics
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)
@@ -297,6 +318,52 @@ def main():
         all_images, all_preds, all_masks, all_stems,
         args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis
     )
+
+    # Global branch attention map visualization
+    if hasattr(model, 'global_branch'):
+        attn_dir = os.path.join(args.output_dir, "attention_maps")
+        os.makedirs(attn_dir, exist_ok=True)
+        model.eval()
+        num_attn_vis = min(args.num_vis, len(all_images))
+        for i in range(num_attn_vis):
+            img_tensor = torch.from_numpy(all_images[i:i+1]).float().to(device)
+            # Get bottleneck size by running encoder
+            with torch.no_grad():
+                if model.use_band_attention:
+                    img_enc = model.band_attention(img_tensor)
+                else:
+                    img_enc = img_tensor
+                feats = model.encoder(img_enc)
+                bottleneck_size = feats[4].shape[2:]
+                attn_map = model.global_branch.get_attention_map(
+                    img_tensor, bottleneck_size
+                )  # (1, 1, H_b, W_b)
+            attn_2d = attn_map[0, 0]  # (H_b, W_b)
+
+            # Pseudo-color image
+            rgb = np.stack([all_images[i][b] for b in vis_bands], axis=-1)
+            for c in range(3):
+                vmin, vmax = np.percentile(rgb[:, :, c], [2, 98])
+                if vmax - vmin > 1e-6:
+                    rgb[:, :, c] = np.clip((rgb[:, :, c] - vmin) / (vmax - vmin), 0, 1)
+                else:
+                    rgb[:, :, c] = 0
+
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            axes[0].imshow(rgb)
+            axes[0].set_title("Pseudo-color")
+            axes[0].axis("off")
+            axes[1].imshow(attn_2d, cmap="jet", vmin=0, vmax=1)
+            axes[1].set_title("Global Saliency Attention")
+            axes[1].axis("off")
+            axes[2].imshow(all_masks[i], cmap="gray", vmin=0, vmax=1)
+            axes[2].set_title("Ground Truth")
+            axes[2].axis("off")
+            fig.suptitle(all_stems[i])
+            fig.tight_layout()
+            fig.savefig(os.path.join(attn_dir, f"{all_stems[i]}_attn.png"), dpi=150)
+            plt.close(fig)
+        print(f"Saved {num_attn_vis} attention map visualizations to {attn_dir}")
 
     print(f"Results saved to {args.output_dir}")
 

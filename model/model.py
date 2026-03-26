@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP
+from .modules import SpectralConv1D, ASPP, BandAttention, GlobalSaliencyBranch
 
 
 # Encoder registry: name -> class
@@ -32,6 +32,8 @@ class SegmentationModel(nn.Module):
         - Skip modules: none / se / cbam / convglu / cbam_convglu
         - ASPP at bottleneck (optional)
         - SpectralConv1D after S1 (optional)
+        - BandAttention before encoder (optional)
+        - GlobalSaliencyBranch guiding bottleneck (optional)
 
     Args:
         num_classes: Number of segmentation classes.
@@ -47,6 +49,9 @@ class SegmentationModel(nn.Module):
         aspp_out_channels: ASPP output channels.
         aspp_atrous_rates: ASPP dilation rates.
         aspp_dropout: ASPP dropout rate.
+        use_band_attention: Insert BandAttention before encoder input.
+        use_global_branch: Insert GlobalSaliencyBranch to guide bottleneck.
+        global_downsample: Downsample factor for GlobalSaliencyBranch input.
     """
 
     def __init__(self, num_classes=2, in_channels=9,
@@ -54,8 +59,23 @@ class SegmentationModel(nn.Module):
                  skip_module="none", se_reduction=16, convglu_expansion=4,
                  use_spectral_conv=False, spectral_conv_kernel_size=3,
                  use_aspp=False, aspp_out_channels=256,
-                 aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5):
+                 aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5,
+                 use_band_attention=False,
+                 use_global_branch=False, global_downsample=4):
         super().__init__()
+
+        # Optional band attention at input level (before encoder)
+        self.use_band_attention = use_band_attention
+        if use_band_attention:
+            self.band_attention = BandAttention(num_bands=in_channels)
+
+        # Optional global saliency branch (guides bottleneck features)
+        self.use_global_branch = use_global_branch
+        if use_global_branch:
+            self.global_branch = GlobalSaliencyBranch(
+                in_channels=in_channels,
+                downsample_factor=global_downsample,
+            )
 
         # Build encoder
         encoder_cls = ENCODERS.get(encoder_name)
@@ -105,6 +125,13 @@ class SegmentationModel(nn.Module):
     def forward(self, x):
         input_size = x.shape[2:]
 
+        # Save original input for global branch (before band attention)
+        if self.use_global_branch:
+            x_input = x
+
+        if self.use_band_attention:
+            x = self.band_attention(x)
+
         features = self.encoder(x)  # [S1, S2, S3, S4, S5]
 
         if self.use_spectral_conv:
@@ -112,6 +139,12 @@ class SegmentationModel(nn.Module):
 
         if self.use_aspp:
             features[4] = self.aspp(features[4])
+
+        # Global saliency guidance: multiply bottleneck by spatial attention
+        if self.use_global_branch:
+            bottleneck_size = features[4].shape[2:]
+            attn_map = self.global_branch(x_input, bottleneck_size)
+            features[4] = features[4] * attn_map
 
         logits = self.decoder(features)
 
@@ -149,6 +182,9 @@ def build_model(cfg):
         aspp_out_channels=model_cfg.get("aspp_out_channels", 256),
         aspp_atrous_rates=tuple(model_cfg.get("aspp_atrous_rates", [6, 12, 18])),
         aspp_dropout=model_cfg.get("aspp_dropout", 0.5),
+        use_band_attention=model_cfg.get("use_band_attention", False),
+        use_global_branch=model_cfg.get("use_global_branch", False),
+        global_downsample=model_cfg.get("global_downsample", 4),
     )
 
     return model
