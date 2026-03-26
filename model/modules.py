@@ -327,3 +327,69 @@ class BandAttention(nn.Module):
     def get_weights(self):
         """Return learned band importance weights as numpy array."""
         return torch.sigmoid(self.band_logits).detach().cpu().squeeze().numpy()
+
+
+class GlobalSaliencyBranch(nn.Module):
+    """Low-resolution branch that produces a spatial attention map.
+
+    Downsamples the input 4x, extracts global saliency via 3 lightweight
+    conv layers, and outputs a single-channel attention map. This map is
+    interpolated to match the main branch's bottleneck spatial size and
+    multiplied onto the bottleneck features, guiding the decoder to focus
+    on suspicious regions.
+
+    The attention map is interpretable: after training, it shows which
+    spatial regions the model considers most likely to contain defects.
+
+    Args:
+        in_channels: Number of input bands (e.g. 9).
+        downsample_factor: How much to shrink input before conv (default 4).
+    """
+
+    def __init__(self, in_channels=9, downsample_factor=4):
+        super().__init__()
+        self.downsample_factor = downsample_factor
+
+        # (9, H/4, W/4) → (32, H/8, W/8) → (64, H/16, W/16) → (64, H/32, W/32)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+        )
+        self.attention_head = nn.Sequential(
+            nn.Conv2d(64, 1, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x, bottleneck_size):
+        """
+        Args:
+            x: (B, C, H, W) original input image.
+            bottleneck_size: (H_b, W_b) spatial size of the bottleneck features
+                             to match (e.g. (32, 32) for EfficientNet-B0,
+                             (16, 16) for MobileNetV2 with 512 input).
+        Returns:
+            attention_map: (B, 1, H_b, W_b) spatial attention map.
+        """
+        x_lr = F.interpolate(
+            x, scale_factor=1.0 / self.downsample_factor,
+            mode='bilinear', align_corners=False
+        )
+        feat = self.conv(x_lr)
+        attn = self.attention_head(feat)
+        attn = F.interpolate(
+            attn, size=bottleneck_size,
+            mode='bilinear', align_corners=False
+        )
+        return attn
+
+    def get_attention_map(self, x, bottleneck_size):
+        """Return attention map for visualization (detached numpy)."""
+        with torch.no_grad():
+            return self.forward(x, bottleneck_size).cpu().numpy()
