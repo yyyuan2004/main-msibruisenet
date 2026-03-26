@@ -297,3 +297,33 @@ class ConvGLU(nn.Module):
         gate = self.act(self.dwconv(self.fc_gate(x)))
         out = self.fc_out(value * gate)
         return self.bn(out)
+
+
+class BandAttention(nn.Module):
+    """Learnable per-band weighting at input level.
+
+    Each spectral band gets an independent importance weight.
+    Weights are passed through sigmoid so they stay in (0, 1).
+    Initialized to zeros -> sigmoid(0) = 0.5 -> all bands start equal.
+
+    After training, call get_weights() to inspect which bands
+    the model considers most/least important. This is directly
+    interpretable and publishable as a band importance figure.
+
+    Only num_bands learnable parameters -- zero overfitting risk.
+
+    Args:
+        num_bands: Number of input spectral bands.
+    """
+
+    def __init__(self, num_bands=9):
+        super().__init__()
+        self.band_logits = nn.Parameter(torch.zeros(1, num_bands, 1, 1))
+
+    def forward(self, x):
+        weights = torch.sigmoid(self.band_logits)
+        return x * weights
+
+    def get_weights(self):
+        """Return learned band importance weights as numpy array."""
+        return torch.sigmoid(self.band_logits).detach().cpu().squeeze().numpy()

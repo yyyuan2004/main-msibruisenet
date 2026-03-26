@@ -256,6 +256,27 @@ def main():
     model = build_model(cfg).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
+    # Band attention weight analysis (if model uses BandAttention)
+    if hasattr(model, 'band_attention'):
+        weights = model.band_attention.get_weights()
+        print("\nLearned band importance weights:")
+        for i, w in enumerate(weights):
+            bar = "#" * int(w * 40)
+            print(f"  Band {i+1}: {w:.4f}  {bar}")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.bar(range(1, len(weights) + 1), weights, color='steelblue')
+        ax.set_xlabel('Band Index')
+        ax.set_ylabel('Learned Weight (sigmoid)')
+        ax.set_title('Band Importance (learned by BandAttention)')
+        ax.set_xticks(range(1, len(weights) + 1))
+        ax.set_ylim(0, 1)
+        fig.tight_layout()
+        band_fig_path = os.path.join(args.output_dir, "band_weights.png")
+        fig.savefig(band_fig_path, dpi=150)
+        plt.close(fig)
+        print(f"Saved band importance figure to {band_fig_path}\n")
+
     # Metrics
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)

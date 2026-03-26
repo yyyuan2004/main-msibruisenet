@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP
+from .modules import SpectralConv1D, ASPP, BandAttention
 
 
 # Encoder registry: name -> class
@@ -32,6 +32,7 @@ class SegmentationModel(nn.Module):
         - Skip modules: none / se / cbam / convglu / cbam_convglu
         - ASPP at bottleneck (optional)
         - SpectralConv1D after S1 (optional)
+        - BandAttention before encoder (optional)
 
     Args:
         num_classes: Number of segmentation classes.
@@ -47,6 +48,7 @@ class SegmentationModel(nn.Module):
         aspp_out_channels: ASPP output channels.
         aspp_atrous_rates: ASPP dilation rates.
         aspp_dropout: ASPP dropout rate.
+        use_band_attention: Insert BandAttention before encoder input.
     """
 
     def __init__(self, num_classes=2, in_channels=9,
@@ -54,8 +56,14 @@ class SegmentationModel(nn.Module):
                  skip_module="none", se_reduction=16, convglu_expansion=4,
                  use_spectral_conv=False, spectral_conv_kernel_size=3,
                  use_aspp=False, aspp_out_channels=256,
-                 aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5):
+                 aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5,
+                 use_band_attention=False):
         super().__init__()
+
+        # Optional band attention at input level (before encoder)
+        self.use_band_attention = use_band_attention
+        if use_band_attention:
+            self.band_attention = BandAttention(num_bands=in_channels)
 
         # Build encoder
         encoder_cls = ENCODERS.get(encoder_name)
@@ -105,6 +113,9 @@ class SegmentationModel(nn.Module):
     def forward(self, x):
         input_size = x.shape[2:]
 
+        if self.use_band_attention:
+            x = self.band_attention(x)
+
         features = self.encoder(x)  # [S1, S2, S3, S4, S5]
 
         if self.use_spectral_conv:
@@ -149,6 +160,7 @@ def build_model(cfg):
         aspp_out_channels=model_cfg.get("aspp_out_channels", 256),
         aspp_atrous_rates=tuple(model_cfg.get("aspp_atrous_rates", [6, 12, 18])),
         aspp_dropout=model_cfg.get("aspp_dropout", 0.5),
+        use_band_attention=model_cfg.get("use_band_attention", False),
     )
 
     return model
