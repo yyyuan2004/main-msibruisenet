@@ -46,7 +46,7 @@ def load_all_data(data_dir, image_dir="images", mask_dir="masks"):
     return images, masks, stems
 
 
-def analyze_correlation(images, masks, output_dir):
+def analyze_correlation(images, masks, stems, data_dir, output_dir):
     """Compute and plot 9x9 band correlation matrices for normal and defect regions."""
     print("Computing band correlation matrices...")
 
@@ -54,13 +54,19 @@ def analyze_correlation(images, masks, output_dir):
     normal_pixels = []
     defect_pixels = []
 
-    for img, mask in zip(images, masks):
-        # img: (H, W, 9), mask: (H, W)
-        normal_mask = mask == 0
+    for img, mask, stem in zip(images, masks, stems):
+        # Load whole apple mask
+        apple_npy = os.path.join(data_dir, "whole", stem + ".npy")
+        if os.path.exists(apple_npy):
+            apple_mask = np.load(apple_npy).astype(np.int64)
+        else:
+            apple_mask = (img.mean(axis=2) > 0.05).astype(np.int64)
+    
+        healthy_mask = (apple_mask > 0) & (mask == 0)
         defect_mask = mask > 0
 
-        if normal_mask.any():
-            normal_pixels.append(img[normal_mask])  # (N, 9)
+        if healthy_mask.any():
+            normal_pixels.append(img[healthy_mask])
         if defect_mask.any():
             defect_pixels.append(img[defect_mask])
 
@@ -240,7 +246,7 @@ def main():
     images, masks, stems = load_all_data(args.data_dir, args.image_dir, args.mask_dir)
 
     # 1. Band correlation matrices
-    normal_pixels, defect_pixels = analyze_correlation(images, masks, args.output_dir)
+    normal_pixels, defect_pixels = analyze_correlation(images, masks, stems, args.data_dir, args.output_dir)
 
     # 2. Mean spectral curves
     analyze_spectral_curves(normal_pixels, defect_pixels, args.output_dir)
