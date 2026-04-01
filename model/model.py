@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP, BandAttention, GlobalSaliencyBranch
+from .modules import SpectralConv1D, ASPP, BandAttention, GlobalSaliencyBranch, SEBlock
 
 
 # Encoder registry: name -> class
@@ -112,6 +112,12 @@ class SegmentationModel(nn.Module):
             )
             bottleneck_channels = aspp_out_channels
 
+        # SE on S5 bottleneck (always enabled)
+        # S5 is the most information-dense layer and the only one that
+        # feeds directly into the decoder without a skip connection.
+        se_in = bottleneck_channels if bottleneck_channels else enc_channels[4]
+        self.bottleneck_se = SEBlock(se_in, reduction=se_reduction)
+
         # Decoder — auto-adapts to encoder's channel widths
         self.decoder = UNetDecoder(
             encoder_channels=enc_channels,
@@ -139,6 +145,9 @@ class SegmentationModel(nn.Module):
 
         if self.use_aspp:
             features[4] = self.aspp(features[4])
+
+        # SE channel attention on bottleneck
+        features[4] = self.bottleneck_se(features[4])
 
         # Global saliency guidance: multiply bottleneck by spatial attention
         if self.use_global_branch:
