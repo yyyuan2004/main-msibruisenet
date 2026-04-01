@@ -16,28 +16,13 @@ from data.augment import get_val_transforms
 from data.split import get_data_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
-# [NEW] 推理后处理: 引导滤波锐化 / Unsharp Masking
-from utils.postprocess import refine_predictions
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, metrics, device, num_classes,
-             postprocess="none", postprocess_cfg=None):
-    """Run evaluation and collect predictions.
-
-    [CHANGED] Added postprocess parameter for inference-time refinement.
-    When postprocess != "none", applies sharpening/guided filtering to
-    predicted probability maps before argmax.
-
-    Args:
-        postprocess: "none", "unsharp", "guided", or "unsharp+guided".
-        postprocess_cfg: Dict of post-processing parameters (optional).
-    """
+def evaluate(model, dataloader, metrics, device, num_classes):
+    """Run evaluation and collect predictions."""
     model.eval()
     metrics.reset()
-
-    if postprocess_cfg is None:
-        postprocess_cfg = {}
 
     all_preds = []
     all_masks = []
@@ -49,17 +34,7 @@ def evaluate(model, dataloader, metrics, device, num_classes,
         masks_dev = masks.to(device)
 
         logits = model(images_dev)
-
-        if postprocess != "none":
-            # [NEW] 推理后处理: 对softmax概率图做锐化
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-            preds_np = refine_predictions(
-                probs, images_np=images.numpy(),
-                method=postprocess, **postprocess_cfg
-            )
-            preds = torch.from_numpy(preds_np).to(device)
-        else:
-            preds = logits.argmax(dim=1)
+        preds = logits.argmax(dim=1)
 
         metrics.update(preds, masks_dev)
 
@@ -194,18 +169,6 @@ def main():
                         help="Output directory for results")
     parser.add_argument("--num_vis", type=int, default=10,
                         help="Number of samples to visualize")
-    # [NEW] 推理后处理选项
-    parser.add_argument("--postprocess", type=str, default="none",
-                        choices=["none", "unsharp", "guided", "unsharp+guided"],
-                        help="Post-processing method for prediction refinement")
-    parser.add_argument("--sharpen_sigma", type=float, default=1.0,
-                        help="Unsharp mask Gaussian sigma")
-    parser.add_argument("--sharpen_strength", type=float, default=1.5,
-                        help="Unsharp mask strength")
-    parser.add_argument("--guide_radius", type=int, default=4,
-                        help="Guided filter radius")
-    parser.add_argument("--guide_eps", type=float, default=0.01,
-                        help="Guided filter regularization eps")
     args = parser.parse_args()
 
     # Load checkpoint
@@ -281,17 +244,9 @@ def main():
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)
 
-    # [CHANGED] 传递后处理参数
-    postprocess_cfg = {
-        "sharpen_sigma": args.sharpen_sigma,
-        "sharpen_strength": args.sharpen_strength,
-        "guide_radius": args.guide_radius,
-        "guide_eps": args.guide_eps,
-    }
     # Evaluate
     results, all_preds, all_masks, all_images, all_stems = evaluate(
-        model, dataloader, metrics, device, num_classes,
-        postprocess=args.postprocess, postprocess_cfg=postprocess_cfg
+        model, dataloader, metrics, device, num_classes
     )
 
     # Print results

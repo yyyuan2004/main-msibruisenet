@@ -32,9 +32,6 @@
 #   │   不改网络结构，只改损失函数。                                   │
 #   └────────────────────────────────────────────────────────────────┘
 #
-# 推理后处理（零训练改动，eval.py中可选开启）:
-#   python eval.py --postprocess guided --guide_radius 4 --guide_eps 0.01
-#   用原始光谱图做引导滤波，在光谱边缘处保留细节，平坦处抑制噪声。
 
 experiment_name: "fused"
 
@@ -103,7 +100,3 @@ eval:
   visualize: true
   num_vis_samples: 10
   vis_bands: [0, 4, 8]
-  # 推理后处理（可选，在eval.py命令行中开启）:
-  #   --postprocess guided          引导滤波
-  #   --postprocess unsharp         Unsharp Masking
-  #   --postprocess unsharp+guided  两者结合
