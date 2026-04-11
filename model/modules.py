@@ -299,6 +299,50 @@ class ConvGLU(nn.Module):
         return self.bn(out)
 
 
+class InputBandSE(nn.Module):
+    """Input-level Squeeze-and-Excitation for spectral band weighting.
+
+    Unlike BandAttention (static per-band scalars), this module computes
+    per-image dynamic weights via GAP -> FC -> ReLU -> FC -> Sigmoid.
+    This allows the model to adapt band importance based on each image's
+    global spectral statistics.
+
+    Args:
+        num_bands: Number of input spectral bands (default 9).
+        reduction: Reduction ratio for FC bottleneck (default 2, so 9->4->9).
+    """
+
+    def __init__(self, num_bands=9, reduction=2):
+        super().__init__()
+        mid = max(num_bands // reduction, 2)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(num_bands, mid, 1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid, num_bands, 1, bias=True),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        w = self.pool(x)    # (B, C, 1, 1)
+        w = self.fc(w)      # (B, C, 1, 1)
+        return x * w
+
+    def get_weights(self, x):
+        """Return per-image band weights as numpy array.
+
+        Args:
+            x: (B, C, H, W) input tensor.
+
+        Returns:
+            (B, C) numpy array of sigmoid-gated weights.
+        """
+        with torch.no_grad():
+            w = self.pool(x)
+            w = self.fc(w)
+        return w.squeeze(-1).squeeze(-1).cpu().numpy()  # (B, C)
+
+
 class BandAttention(nn.Module):
     """Learnable per-band weighting at input level.
 

@@ -1,0 +1,56 @@
+# PCA Baseline: MobileNetV2-UNet with PCA 3-channel input (9ch -> 3ch)
+# Requires precomputed pca_matrix.npz:
+#   python scripts/precompute_pca.py --data_dir /root/autodl-tmp/datasets/185_9bands --output pca_matrix.npz
+experiment_name: "pca_baseline"
+
+model:
+  num_classes: 2
+  encoder_name: "mobilenetv2"
+  encoder_pretrained: true
+  skip_module: "none"
+  use_spectral_conv: false
+
+data:
+  data_dir: "/root/autodl-tmp/datasets/185_9bands"
+  image_dir: "images"
+  mask_dir: "masks"
+  num_channels: 3           # PCA reduces 9ch to 3ch
+  num_classes: 2
+  image_size: 512
+  crop_size: 384
+
+  # PCA preprocessing
+  use_pca: true
+  pca_matrix_path: "pca_matrix.npz"
+
+train:
+  batch_size: 32
+  num_epochs: 500
+  optimizer: "adamw"
+  lr: 5.0e-4
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  eta_min: 1.0e-6
+  loss: "ce_dice"
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  dice_weight: 0.5
+  ce_weight: 0.5
+
+  augment:
+    horizontal_flip: true
+    vertical_flip: true
+    random_rotation: true
+    elastic_transform: false
+    gaussian_noise: false
+    gaussian_noise_std: 0.01
+
+  val_interval: 1
+  save_interval: 50
+  num_workers: 4
+  pin_memory: true
+
+eval:
+  visualize: true
+  num_vis_samples: 10
+  vis_bands: [0, 1, 2]     # PCA components as pseudo-color
