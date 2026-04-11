@@ -230,6 +230,9 @@ class SegmentationLoss(nn.Module):
 
         if loss_type == "focal_dice":
             self.ce_loss = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
+        elif loss_type == "focal":
+            self.ce_loss = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
+            self.dice_weight = 0.0  # Focal only, no Dice
         else:
             self.ce_loss = nn.CrossEntropyLoss()
 

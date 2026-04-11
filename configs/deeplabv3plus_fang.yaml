@@ -1,0 +1,51 @@
+# Fang 2025 Improved DeepLabV3+ with DSConv ASPP + ECA
+# Reference: Fang et al. 2025, "Multispectral imaging-based detection of apple
+# bruises using segmentation network and classification model"
+experiment_name: "deeplabv3plus_fang"
+
+model:
+  architecture: "deeplabv3plus_fang"
+  num_classes: 2
+  encoder_name: "mobilenetv2"
+  encoder_pretrained: true
+  aspp_out_channels: 256
+  low_level_channels: 48
+
+data:
+  data_dir: "/root/autodl-tmp/datasets/185_9bands"
+  image_dir: "images"
+  mask_dir: "masks"
+  num_channels: 9
+  num_classes: 2
+  image_size: 512
+  crop_size: 384
+
+train:
+  batch_size: 32
+  num_epochs: 500
+  optimizer: "adamw"
+  lr: 5.0e-4
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  eta_min: 1.0e-6
+  loss: "focal"
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+
+  augment:
+    horizontal_flip: true
+    vertical_flip: true
+    random_rotation: true
+    elastic_transform: false
+    gaussian_noise: false
+    gaussian_noise_std: 0.01
+
+  val_interval: 1
+  save_interval: 50
+  num_workers: 4
+  pin_memory: true
+
+eval:
+  visualize: true
+  num_vis_samples: 10
+  vis_bands: [0, 4, 8]

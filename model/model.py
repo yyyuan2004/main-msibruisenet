@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP, BandAttention, GlobalSaliencyBranch, SEBlock
+from .modules import SpectralConv1D, ASPP, BandAttention, InputBandSE, GlobalSaliencyBranch, SEBlock
 
 
 # Encoder registry: name -> class
@@ -61,13 +61,22 @@ class SegmentationModel(nn.Module):
                  use_aspp=False, aspp_out_channels=256,
                  aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5,
                  use_band_attention=False,
+                 band_attention_type="static", band_se_reduction=2,
                  use_global_branch=False, global_downsample=4):
         super().__init__()
 
         # Optional band attention at input level (before encoder)
+        # "static" = BandAttention (fixed per-band scalars, 9 params)
+        # "dynamic" = InputBandSE (per-image GAP->FC->Sigmoid, 85 params)
         self.use_band_attention = use_band_attention
+        self.band_attention_type = band_attention_type
         if use_band_attention:
-            self.band_attention = BandAttention(num_bands=in_channels)
+            if band_attention_type == "dynamic":
+                self.band_attention = InputBandSE(
+                    num_bands=in_channels, reduction=band_se_reduction
+                )
+            else:
+                self.band_attention = BandAttention(num_bands=in_channels)
 
         # Optional global saliency branch (guides bottleneck features)
         self.use_global_branch = use_global_branch
@@ -171,12 +180,29 @@ MobileNetV2UNet = SegmentationModel
 def build_model(cfg):
     """Build model from config dict.
 
-    Config fields used:
-        model.encoder_name: "mobilenetv2" or "efficientnet_b0" (default "efficientnet_b0")
-        model.num_classes, model.skip_module, model.use_aspp, etc.
+    Supports multi-architecture dispatch via cfg["model"]["architecture"]:
+        - "default" (or absent): SegmentationModel (MobileNetV2/EfficientNet-B0 UNet)
+        - "deeplabv3plus_fang": Fang 2025 Improved DeepLabV3+
+        - "smp": segmentation_models_pytorch wrapper
+
+    Existing configs without "architecture" field default to SegmentationModel.
     """
     model_cfg = cfg["model"]
+    arch = model_cfg.get("architecture", "default")
 
+    if arch == "deeplabv3plus_fang":
+        from .deeplabv3plus import build_deeplabv3plus_fang
+        return build_deeplabv3plus_fang(cfg)
+    elif arch == "smp":
+        from .smp_models import build_smp_model
+        return build_smp_model(cfg)
+    elif arch != "default":
+        raise ValueError(
+            f"Unknown architecture '{arch}'. "
+            f"Available: default, deeplabv3plus_fang, smp"
+        )
+
+    # Default: SegmentationModel
     model = SegmentationModel(
         num_classes=model_cfg.get("num_classes", 2),
         in_channels=cfg["data"].get("num_channels", 9),
@@ -192,6 +218,8 @@ def build_model(cfg):
         aspp_atrous_rates=tuple(model_cfg.get("aspp_atrous_rates", [6, 12, 18])),
         aspp_dropout=model_cfg.get("aspp_dropout", 0.5),
         use_band_attention=model_cfg.get("use_band_attention", False),
+        band_attention_type=model_cfg.get("band_attention_type", "static"),
+        band_se_reduction=model_cfg.get("band_se_reduction", 2),
         use_global_branch=model_cfg.get("use_global_branch", False),
         global_downsample=model_cfg.get("global_downsample", 4),
     )

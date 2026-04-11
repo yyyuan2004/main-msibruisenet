@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from data.dataset import MSIDataset
+from data.dataset import MSIDataset, get_dataset_kwargs
 from data.augment import get_train_transforms, get_val_transforms
 from data.split import get_data_splits
 from model.model import build_model
@@ -105,12 +105,14 @@ def train(cfg, seed, output_dir):
     val_transform = get_val_transforms(cfg)
 
     # Datasets
+    ds_kwargs = get_dataset_kwargs(cfg)
     train_dataset = MSIDataset(
         splits["train"], data_dir=data_dir,
         image_dir=cfg["data"]["image_dir"],
         mask_dir=cfg["data"]["mask_dir"],
         transform=train_transform,
         num_classes=cfg["data"]["num_classes"],
+        **ds_kwargs,
     )
     val_dataset = MSIDataset(
         splits["val"], data_dir=data_dir,
@@ -118,6 +120,7 @@ def train(cfg, seed, output_dir):
         mask_dir=cfg["data"]["mask_dir"],
         transform=val_transform,
         num_classes=cfg["data"]["num_classes"],
+        **ds_kwargs,
     )
 
     # DataLoaders
