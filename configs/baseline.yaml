@@ -3,7 +3,7 @@ experiment_name: "baseline"
 
 model:
   num_classes: 2
-  encoder_name: "efficientnet_b0"
+  encoder_name: "mobilenetv2"
   encoder_pretrained: true
   # Skip connection enhancement module: none / se / convglu
   skip_module: "none"
@@ -11,7 +11,7 @@ model:
   use_spectral_conv: false
 
 data:
-  data_dir: "/home/yy/datasets/153"
+  data_dir: "/root/autodl-tmp/datasets/185_9bands"
   image_dir: "images"
   mask_dir: "masks"
   num_channels: 9
@@ -20,10 +20,10 @@ data:
   crop_size: 384
 
 train:
-  batch_size: 4
-  num_epochs: 200
+  batch_size: 32
+  num_epochs: 500
   optimizer: "adamw"
-  lr: 1.0e-3
+  lr: 5.0e-4
   weight_decay: 1.0e-4
   scheduler: "cosine"
   eta_min: 1.0e-6
@@ -44,7 +44,7 @@ train:
 
   # Validation and checkpointing
   val_interval: 1
-  save_interval: 50
+  save_interval: 99999
   num_workers: 4
   pin_memory: true
 

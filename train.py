@@ -1,6 +1,7 @@
 """Training script for MobileNetV2-UNet MSI segmentation with ablation support."""
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -147,8 +148,6 @@ def train(cfg, seed, output_dir):
     print(f"Model: {cfg['experiment_name']} | Parameters: {param_count:.2f}M")
 
     # Loss
-    # [CHANGED v2] Added edge_preserve_weight for fused config
-    # 总loss = CE + Dice + SpectralSmoothnessLoss + EdgePreservingLoss
     criterion = SegmentationLoss(
         loss_type=train_cfg.get("loss", "ce_dice"),
         ce_weight=train_cfg.get("ce_weight", 0.5),
@@ -156,7 +155,7 @@ def train(cfg, seed, output_dir):
         focal_gamma=train_cfg.get("focal_gamma", 2.0),
         focal_alpha=train_cfg.get("focal_alpha", 0.25),
         spectral_smoothness_weight=train_cfg.get("spectral_smoothness_weight", 0.0),
-        edge_preserve_weight=train_cfg.get("edge_preserve_weight", 0.0),  # [NEW]
+        edge_preserve_weight=train_cfg.get("edge_preserve_weight", 0.0),
     )
 
     # Optimizer
@@ -191,6 +190,7 @@ def train(cfg, seed, output_dir):
     # Early stopping: 连续 patience 个epoch mIoU无提升则停止训练
     patience = train_cfg.get("early_stopping_patience", 0)  # 0=禁用
     no_improve_count = 0
+    epoch_logs = []  # 记录每个epoch的指标，供后续绘图使用
 
     print(f"\nStarting training for {train_cfg['num_epochs']} epochs...")
     if patience > 0:
@@ -219,6 +219,19 @@ def train(cfg, seed, output_dir):
         writer.add_scalar("val/IoU_class1", defect_iou, epoch)
         writer.add_scalar("val/F1_macro", val_results["F1_macro"], epoch)
         writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+
+        # 记录本epoch指标
+        epoch_logs.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "mIoU": miou,
+            "IoU_class1": defect_iou,
+            "F1_macro": float(val_results["F1_macro"]),
+            "Precision_macro": float(val_results["Precision_macro"]),
+            "Recall_macro": float(val_results["Recall_macro"]),
+            "lr": optimizer.param_groups[0]["lr"],
+        })
 
         # Print progress
         if epoch % 10 == 0 or epoch == 1:
@@ -270,6 +283,11 @@ def train(cfg, seed, output_dir):
     }, os.path.join(ckpt_dir, "final_model.pth"))
 
     writer.close()
+
+    # 保存逐epoch训练日志（供绘图脚本使用）
+    log_path = os.path.join(output_dir, "training_log.json")
+    with open(log_path, "w") as f:
+        json.dump(epoch_logs, f, indent=2)
 
     print(f"\nTraining complete. Best IoU(defect): {best_miou:.4f} at epoch {best_epoch}")
     print(f"Checkpoints saved to: {ckpt_dir}")
