@@ -5,15 +5,9 @@ Modules:
     - CBAM (Convolutional Block Attention Module): Channel + spatial attention.
     - ASPP (Atrous Spatial Pyramid Pooling): Multi-scale context aggregation.
     - SpectralConv1D: 1D convolution along the spectral (band) dimension.
-    - ConvGLU: Convolutional Gated Linear Unit — a channel mixer (NOT attention).
-
-Change log (ASPP/CBAM update):
-    - [NEW] CBAMBlock: channel attention (similar to SE) + spatial attention (conv on
-      max/avg-pooled spatial maps). Placed at each skip connection level in the decoder,
-      replacing SE in the "+CBAM" ablation variant.
-    - [NEW] ASPP: Atrous Spatial Pyramid Pooling with dilated rates {1, 6, 12, 18} +
-      global pooling branch. Placed between encoder bottleneck (S5) and decoder input.
-      Reduces 320ch -> 256ch (configurable).
+    - InputBandSE: Per-image dynamic band weighting via GAP+FC.
+    - BandAttention: Static per-band learnable weighting.
+    - GlobalSaliencyBranch: Low-resolution spatial attention for bottleneck.
 """
 
 import torch
@@ -253,50 +247,6 @@ class ASPP(nn.Module):
         outputs = [branch(x) for branch in self.branches]
         x = torch.cat(outputs, dim=1)
         return self.project(x)
-
-
-class ConvGLU(nn.Module):
-    """Convolutional Gated Linear Unit — a channel mixer from TransNeXt (CVPR 2024).
-
-    This is NOT an attention module. It is a feed-forward network variant that
-    replaces Conv-BN-ReLU blocks in the decoder.
-
-    Structure:
-        Input x (B, C_in, H, W)
-        ├─ Value branch: Linear(C_in -> hidden) -> value
-        ├─ Gate branch:  Linear(C_in -> hidden) -> DWConv3x3 -> GELU -> gate
-        └─ Output: (value * gate) -> Linear(hidden -> C_out)
-
-    Args:
-        in_channels: Input channel count (after concat in decoder).
-        out_channels: Output channel count for this decoder stage.
-        expansion_ratio: Expansion ratio for hidden dimension (default 4).
-    """
-
-    def __init__(self, in_channels, out_channels, expansion_ratio=4):
-        super().__init__()
-        hidden = int(in_channels * expansion_ratio * 2 / 3)
-        hidden = max(hidden, 8)  # ensure minimum hidden size
-
-        # Value branch
-        self.fc_value = nn.Conv2d(in_channels, hidden, 1)
-
-        # Gate branch
-        self.fc_gate = nn.Conv2d(in_channels, hidden, 1)
-        self.dwconv = nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden)
-        self.act = nn.GELU()
-
-        # Output projection
-        self.fc_out = nn.Conv2d(hidden, out_channels, 1)
-
-        # Batch normalization on output
-        self.bn = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x):
-        value = self.fc_value(x)
-        gate = self.act(self.dwconv(self.fc_gate(x)))
-        out = self.fc_out(value * gate)
-        return self.bn(out)
 
 
 class InputBandSE(nn.Module):

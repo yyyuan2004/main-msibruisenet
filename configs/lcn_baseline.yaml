@@ -45,7 +45,7 @@ train:
     gaussian_noise_std: 0.01
 
   val_interval: 1
-  save_interval: 50
+  save_interval: 99999
   num_workers: 4
   pin_memory: true
 

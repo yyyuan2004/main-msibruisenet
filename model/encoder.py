@@ -1,12 +1,11 @@
 """Backbone encoders adapted for 9-channel multispectral input.
 
 Supported encoders:
-    - MobileNetV2: lightweight (2.2M params), 5-level features down to stride 1/32.
-    - EfficientNet-B0: stronger capacity (4.0M params), 5-level features down to stride 1/16.
-      Uses the final Conv2dNormActivation (1280ch) as bottleneck, providing richer features
-      at the cost of higher computation. No stride-32 stage — bottleneck stays at 1/16.
+    - MobileNetV2: lightweight (~2.2M params), 5-level features down to stride 1/32.
+    - MobileNetV3-Large: improved MobileNet (~4.2M params), 5-level features down to stride 1/16.
+    - EfficientNet-B0: stronger capacity (~4.0M params), 5-level features down to stride 1/16.
 
-Both encoders:
+All encoders:
     - Adapt first conv from 3ch to in_channels (default 9).
     - Copy ImageNet pretrained weights for first 3 channels, Kaiming init for the rest.
     - Return 5 feature levels [S1, S2, S3, S4, S5] for UNet skip connections.
@@ -15,6 +14,7 @@ Both encoders:
 import torch
 import torch.nn as nn
 from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
 
@@ -62,6 +62,74 @@ class MobileNetV2Encoder(nn.Module):
         backbone.features[0][0] = new_conv
 
         # Store all feature blocks as a list for sequential processing
+        self.blocks = nn.ModuleList(backbone.features)
+
+    def forward(self, x):
+        """Extract multi-scale features.
+
+        Args:
+            x: Input tensor of shape (B, 9, H, W).
+
+        Returns:
+            List of 5 feature tensors [S1, S2, S3, S4, S5].
+        """
+        features = []
+        stage_idx = 0
+
+        for i, block in enumerate(self.blocks):
+            x = block(x)
+            if stage_idx < len(self.STAGE_ENDS) and i == self.STAGE_ENDS[stage_idx] - 1:
+                features.append(x)
+                stage_idx += 1
+
+        return features  # [S1, S2, S3, S4, S5]
+
+    def get_output_channels(self):
+        """Return output channel counts for each stage."""
+        return list(self.OUT_CHANNELS)
+
+
+class MobileNetV3Encoder(nn.Module):
+    """MobileNetV3-Large backbone extracting 5 levels of features for UNet skip connections.
+
+    Feature extraction points (from MobileNetV3-Large features):
+        S1: features[0:2]   -> stride 1/2,  channels 16
+        S2: features[2:4]   -> stride 1/4,  channels 24
+        S3: features[4:7]   -> stride 1/8,  channels 40
+        S4: features[7:13]  -> stride 1/16, channels 112
+        S5: features[13:16] -> stride 1/16, channels 960 (bottleneck)
+
+    Args:
+        in_channels: Number of input channels (default 9 for MSI).
+        pretrained: Whether to use ImageNet pretrained weights.
+    """
+
+    STAGE_ENDS = [2, 4, 7, 13, 16]
+    OUT_CHANNELS = [16, 24, 40, 112, 960]
+
+    def __init__(self, in_channels=9, pretrained=True):
+        super().__init__()
+
+        if pretrained:
+            backbone = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V1)
+        else:
+            backbone = mobilenet_v3_large(weights=None)
+
+        # Adapt the first conv layer from 3 channels to in_channels
+        original_conv = backbone.features[0][0]
+        out_ch = original_conv.out_channels
+        new_conv = nn.Conv2d(
+            in_channels, out_ch, kernel_size=3, stride=2, padding=1, bias=False
+        )
+
+        with torch.no_grad():
+            new_conv.weight[:, :3, :, :] = original_conv.weight.clone()
+            nn.init.kaiming_normal_(
+                new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
+            )
+
+        backbone.features[0][0] = new_conv
+
         self.blocks = nn.ModuleList(backbone.features)
 
     def forward(self, x):

@@ -7,13 +7,14 @@ import numpy as np
 from collections import defaultdict
 
 
-CONFIGS = ["baseline", "se", "spconv", "convglu", "spconv_se"]
+CONFIGS = ["baseline", "se", "spconv", "spconv_se", "cbam", "aspp"]
 CONFIG_DISPLAY = {
     "baseline": "baseline",
     "se": "+SE",
     "spconv": "+1D-SpConv",
-    "convglu": "+ConvGLU",
     "spconv_se": "+1D-SpConv+SE",
+    "cbam": "+CBAM",
+    "aspp": "+ASPP",
 }
 SEEDS = [42, 123, 456]
 METRICS = ["mIoU", "F1_macro", "Precision_macro", "Recall_macro"]

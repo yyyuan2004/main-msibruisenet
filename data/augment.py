@@ -303,53 +303,6 @@ def get_val_transforms(cfg):
     return Compose(transforms)
 
 
-def get_weak_transforms(cfg):
-    """Build weak augmentation pipeline for Mean Teacher (Teacher branch).
-
-    Weak augmentation: only spatial flips + rotation (no destructive transforms).
-    Used for generating high-quality pseudo-labels from the Teacher model.
-    """
-    crop_size = cfg["data"].get("crop_size", cfg["data"]["image_size"])
-
-    transforms = [
-        RandomHorizontalFlip(p=0.5),
-        RandomVerticalFlip(p=0.5),
-        RandomRotation90(),
-    ]
-
-    if crop_size < cfg["data"]["image_size"]:
-        transforms.append(RandomCrop(crop_size))
-
-    return Compose(transforms)
-
-
-def get_strong_transforms(cfg):
-    """Build strong augmentation pipeline for Mean Teacher (Student branch).
-
-    Strong augmentation: spatial flips/rotation + destructive transforms
-    (cutout, blur, intensity jitter, elastic deformation, noise).
-    Forces the Student to learn robust features despite heavy perturbation.
-    """
-    crop_size = cfg["data"].get("crop_size", cfg["data"]["image_size"])
-
-    transforms = [
-        RandomHorizontalFlip(p=0.5),
-        RandomVerticalFlip(p=0.5),
-        RandomRotation90(),
-        # Destructive transforms
-        Cutout(num_holes=2, max_h_frac=0.3, max_w_frac=0.3, p=0.5),
-        GaussianBlur(kernel_range=(3, 7), sigma_range=(0.5, 2.0), p=0.3),
-        IntensityJitter(scale_range=(0.8, 1.2), p=0.5),
-        ElasticTransform(alpha=50, sigma=7, p=0.3),
-        GaussianNoise(std=0.02, p=0.3),
-    ]
-
-    if crop_size < cfg["data"]["image_size"]:
-        transforms.append(RandomCrop(crop_size))
-
-    return Compose(transforms)
-
-
 class CenterCrop:
     """Center crop to target size."""
 
