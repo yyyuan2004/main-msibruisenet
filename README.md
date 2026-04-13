@@ -1,3 +1,4 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yyyuan2004/main-msibruisenet)
 # MSI-Bruise-Baseline: MobileNetV2-UNet + Attention Module Ablation
 
 Pixel-level semantic segmentation of apple defects using 9-channel near-infrared multispectral images (MSI), with ablation study on pluggable feature enhancement modules.
