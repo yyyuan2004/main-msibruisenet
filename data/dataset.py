@@ -34,25 +34,39 @@ def apply_lcn(image, kernel_size=31, eps=1e-6):
     return out
 
 
+def unsharp_mask(image, sigma=1.0, alpha=1.5):
+    """Apply Unsharp Masking per band: sharpened = image + alpha * (image - blurred).
+
+    Args:
+        image: (C, H, W) float32 array.
+        sigma: Gaussian blur sigma.
+        alpha: Sharpening strength.
+
+    Returns:
+        Sharpened image with same shape.
+    """
+    C, H, W = image.shape
+    out = np.empty_like(image)
+    for c in range(C):
+        blurred = cv2.GaussianBlur(image[c], (0, 0), sigma)
+        out[c] = image[c] + alpha * (image[c] - blurred)
+    return out
+
+
 class MSIDataset(Dataset):
     """Dataset for loading 9-channel .npy spectral images and corresponding masks.
 
-    Args:
-        file_list: List of file stems (without extension).
-        data_dir: Root data directory.
-        image_dir: Subdirectory name for spectral images.
-        mask_dir: Subdirectory name for mask files.
-        transform: Spatial transform function that takes (image, mask) and returns (image, mask).
-        num_classes: Number of segmentation classes.
-        use_lcn: Whether to apply Local Contrast Normalization.
-        lcn_kernel_size: LCN window size.
-        lcn_eps: LCN epsilon for numerical stability.
-        use_pca: Whether to apply PCA dimensionality reduction.
-        pca_matrix_path: Path to precomputed pca_matrix.npz.
+    Returns 4 values: (image, mask, image_raw, stem).
+    - image: preprocessed (possibly band-selected, sharpened, LCN, PCA) and augmented tensor.
+    - mask: ground truth mask tensor.
+    - image_raw: original full-band image tensor (before any preprocessing), for visualization.
+    - stem: file name stem string.
     """
 
     def __init__(self, file_list, data_dir="data", image_dir="images",
                  mask_dir="masks", transform=None, num_classes=2,
+                 band_indices=None,
+                 use_sharpen=False, sharpen_sigma=1.0, sharpen_alpha=1.5,
                  use_lcn=False, lcn_kernel_size=31, lcn_eps=1e-6,
                  use_pca=False, pca_matrix_path=""):
         self.file_list = file_list
@@ -60,6 +74,14 @@ class MSIDataset(Dataset):
         self.mask_root = os.path.join(data_dir, mask_dir)
         self.transform = transform
         self.num_classes = num_classes
+
+        # Band selection
+        self.band_indices = band_indices
+
+        # Sharpen config
+        self.use_sharpen = use_sharpen
+        self.sharpen_sigma = sharpen_sigma
+        self.sharpen_alpha = sharpen_alpha
 
         # LCN config
         self.use_lcn = use_lcn
@@ -101,11 +123,22 @@ class MSIDataset(Dataset):
         image = np.load(image_path).astype(np.float32)  # (H, W, 9)
         image = image.transpose(2, 0, 1)  # (9, H, W)
 
+        # Keep a copy of the raw full-band image for visualization
+        image_raw = image.copy()
+
+        # Band selection: (9, H, W) -> (len(band_indices), H, W)
+        if self.band_indices is not None:
+            image = image[self.band_indices]
+
+        # Optional Unsharp Masking
+        if self.use_sharpen:
+            image = unsharp_mask(image, self.sharpen_sigma, self.sharpen_alpha)
+
         # Optional LCN preprocessing (before augmentation)
         if self.use_lcn:
             image = apply_lcn(image, self.lcn_kernel_size, self.lcn_eps)
 
-        # Optional PCA dimensionality reduction: (9, H, W) -> (n_components, H, W)
+        # Optional PCA dimensionality reduction: (C, H, W) -> (n_components, H, W)
         if self.use_pca and self.pca_components is not None:
             C, H, W = image.shape
             centered = image - self.pca_mean[:, None, None]
@@ -122,14 +155,19 @@ class MSIDataset(Dataset):
         # Convert to tensors
         image = torch.from_numpy(np.ascontiguousarray(image)).float()
         mask = torch.from_numpy(np.ascontiguousarray(mask)).long()
+        image_raw = torch.from_numpy(np.ascontiguousarray(image_raw)).float()
 
-        return image, mask, stem
+        return image, mask, image_raw, stem
 
 
 def get_dataset_kwargs(cfg):
-    """Extract LCN/PCA dataset kwargs from config dict."""
+    """Extract band_indices / sharpen / LCN / PCA dataset kwargs from config dict."""
     data_cfg = cfg.get("data", {})
     return {
+        "band_indices": data_cfg.get("band_indices", None),
+        "use_sharpen": data_cfg.get("use_sharpen", False),
+        "sharpen_sigma": data_cfg.get("sharpen_sigma", 1.0),
+        "sharpen_alpha": data_cfg.get("sharpen_alpha", 1.5),
         "use_lcn": data_cfg.get("use_lcn", False),
         "lcn_kernel_size": data_cfg.get("lcn_kernel_size", 31),
         "lcn_eps": data_cfg.get("lcn_eps", 1e-6),

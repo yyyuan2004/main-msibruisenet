@@ -1,31 +1,31 @@
 # ============================================================================
-# Config: baseline — MobileNetV2-UNet 基线（无任何注意力/增强模块）
+# Config: baseline_sharpen — MobileNetV2-UNet + Unsharp Masking 预处理
 # ----------------------------------------------------------------------------
 # 工作流：
 #   [1] 数据读取   : 加载 185 张 9波段 .npy 图像与 0/1 二值 mask
-#   [2] 预处理     : (可选 band_indices 波段选择 / 可选 use_sharpen 锐化)
-#                   本 config 均关闭，使用完整 9 波段原始反射率
+#   [2] 预处理     : Unsharp Masking 锐化 (sigma=1.0, alpha=1.5)
+#                   sharpened = image + alpha * (image - GaussianBlur(image))
+#                   增强边缘/纹理细节，可能提升瘀伤边界分割精度
 #   [3] 数据划分   : train:val = 7:3（由 data/split.py 实现，seed 控制）
 #   [4] 数据增强   : 仅空间变换 (H-flip, V-flip, 90/180/270° 旋转)
-#                   不做亮度/对比度扰动 — 光谱反射率具有物理意义
-#   [5] 模型结构   : MobileNetV2 (ImageNet pretrained, 首层改为 9ch)
-#                   → UNet decoder (skip_module="none")
-#                   → 1x1 分割头 → 双线性上采样到原图尺寸
+#   [5] 模型结构   : MobileNetV2 + UNet decoder (skip_module="none")
+#                   与 baseline 完全一致，仅输入经过锐化
 #   [6] 损失函数   : 0.5 * CrossEntropy + 0.5 * Dice
 #   [7] 优化器     : AdamW (lr=5e-4, wd=1e-4) + CosineAnnealingLR (eta_min=1e-6)
 #   [8] 训练策略   : 500 epochs, 早停 patience=50 (监控 class1 IoU)
-#                   best_model.pth 始终为历史最优
-#   [9] 评估       : 在 val set 上计算 class1 IoU / F1 / Precision / Recall
-#   [10] 可视化    : train_eval.py 自动生成指标曲线 + 预测可视化
+#   [9] 评估       : val set class1 IoU / F1 / Precision / Recall
+#   [10] 可视化    : train_eval.py 自动生成指标曲线 + 预测可视化（含锐化前后对比）
+#
+#   作为预处理消融对照，验证 Unsharp Masking 是否对分割性能有提升。
 # ============================================================================
 
-experiment_name: "baseline"
+experiment_name: "baseline_sharpen"
 
 model:
   num_classes: 2
-  encoder_name: "mobilenetv2"    # 可选: mobilenetv2 / mobilenetv3 / efficientnet_b0
+  encoder_name: "mobilenetv2"
   encoder_pretrained: true
-  skip_module: "none"            # none / se / cbam
+  skip_module: "none"
   use_spectral_conv: false
   use_aspp: false
   use_band_attention: false
@@ -39,10 +39,9 @@ data:
   num_classes: 2
   image_size: 512
   crop_size: 384
-  # 波段选择 (null = 使用全部 9 波段；若指定则 num_channels 需与长度一致)
   band_indices: null
-  # 锐化预处理 (Unsharp Masking)
-  use_sharpen: false
+  # 开启 Unsharp Masking 锐化
+  use_sharpen: true
   sharpen_sigma: 1.0
   sharpen_alpha: 1.5
 
@@ -57,8 +56,8 @@ train:
   loss: "ce_dice"
   ce_weight: 0.5
   dice_weight: 0.5
-  save_interval: 99999            # 禁用周期性 checkpoint
-  early_stopping_patience: 50     # class1 IoU 连续 50 epoch 无提升则停止
+  save_interval: 99999
+  early_stopping_patience: 50
   val_interval: 1
   num_workers: 4
   pin_memory: true
@@ -73,4 +72,4 @@ train:
 eval:
   visualize: true
   num_vis_samples: 10
-  vis_bands: [0, 4, 8]            # 伪彩色显示用的波段索引 (1st/5th/9th)
+  vis_bands: [0, 4, 8]

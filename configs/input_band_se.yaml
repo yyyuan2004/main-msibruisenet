@@ -1,5 +1,15 @@
-# InputBandSE: MobileNetV2-UNet with dynamic per-image band weighting
-# Uses InputBandSE (GAP->FC->ReLU->FC->Sigmoid) instead of static BandAttention
+# ============================================================================
+# Config: input_band_se — 输入端动态波段加权 (InputBandSE)
+# ----------------------------------------------------------------------------
+# 工作流（在 baseline 基础上的差异）：
+#   [2.5] 波段注意力 : 在 encoder 之前插入 InputBandSE 模块
+#                     (GAP → FC → ReLU → FC → Sigmoid)，对每张图逐张
+#                     计算 9 维权重 (动态) 并逐波段缩放，学到"每张图
+#                     应强调哪些光谱波段"。参数量 ~85，随图像自适应。
+#   [5]   其余结构   : MobileNetV2 + UNet decoder (skip_module="none")
+#   其余 train/data/augment 与 baseline 一致
+# ============================================================================
+
 experiment_name: "input_band_se"
 
 model:
@@ -8,11 +18,11 @@ model:
   encoder_pretrained: true
   skip_module: "none"
   use_spectral_conv: false
-
-  # Dynamic band attention (InputBandSE)
+  use_aspp: false
   use_band_attention: true
-  band_attention_type: "dynamic"
+  band_attention_type: "dynamic"   # dynamic = InputBandSE; static = BandAttention
   band_se_reduction: 2
+  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
@@ -22,6 +32,10 @@ data:
   num_classes: 2
   image_size: 512
   crop_size: 384
+  band_indices: null
+  use_sharpen: false
+  sharpen_sigma: 1.0
+  sharpen_alpha: 1.5
 
 train:
   batch_size: 32
@@ -32,10 +46,13 @@ train:
   scheduler: "cosine"
   eta_min: 1.0e-6
   loss: "ce_dice"
-  focal_gamma: 2.0
-  focal_alpha: 0.25
-  dice_weight: 0.5
   ce_weight: 0.5
+  dice_weight: 0.5
+  save_interval: 99999
+  early_stopping_patience: 50
+  val_interval: 1
+  num_workers: 4
+  pin_memory: true
 
   augment:
     horizontal_flip: true
@@ -43,12 +60,6 @@ train:
     random_rotation: true
     elastic_transform: false
     gaussian_noise: false
-    gaussian_noise_std: 0.01
-
-  val_interval: 1
-  save_interval: 99999
-  num_workers: 4
-  pin_memory: true
 
 eval:
   visualize: true

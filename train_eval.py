@@ -41,7 +41,7 @@ from data.augment import (
 from data.split import get_data_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
-from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights
+from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, _normalize_band
 
 
 # ---------------------------------------------------------------------------
@@ -176,65 +176,50 @@ def plot_metric_curves(log_path, output_dir, experiment_name):
     fig.savefig(os.path.join(vis_dir, "precision_recall_curve.png"), dpi=200)
     plt.close(fig)
 
-    # --- 4. 学习率曲线 ---
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(epochs, lr, color="#607D8B")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Learning Rate")
-    ax.set_title(f"Learning Rate Schedule — {experiment_name}")
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax.ticklabel_format(axis="y", style="sci", scilimits=(-4, -3))
-    fig.tight_layout()
-    fig.savefig(os.path.join(vis_dir, "lr_curve.png"), dpi=200)
-    plt.close(fig)
+    # --- 4. 汇总图 (1x3 子图：Loss | IoU+F1 | Precision+Recall) ---
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    # --- 5. 汇总图 (2x2 子图) ---
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # (0) Loss
+    axes[0].plot(epochs, train_loss, color="#2196F3", label="Train Loss")
+    axes[0].plot(epochs, val_loss, color="#F44336", label="Val Loss")
+    axes[0].set_title("Loss")
+    axes[0].legend(fontsize=9)
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
 
-    # (0,0) Loss
-    axes[0, 0].plot(epochs, train_loss, color="#2196F3", label="Train Loss")
-    axes[0, 0].plot(epochs, val_loss, color="#F44336", label="Val Loss")
-    axes[0, 0].set_title("Loss")
-    axes[0, 0].legend(fontsize=8)
-    axes[0, 0].set_xlabel("Epoch")
+    # (1) IoU + F1
+    axes[1].plot(epochs, iou_c1, color="#4CAF50", label="IoU(defect)")
+    axes[1].plot(epochs, f1, color="#FF9800", label="F1(macro)")
+    axes[1].set_title("IoU & F1")
+    axes[1].set_ylim(0, 1.05)
+    axes[1].legend(fontsize=9)
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Score")
 
-    # (0,1) IoU + F1
-    axes[0, 1].plot(epochs, iou_c1, color="#4CAF50", label="IoU(defect)")
-    axes[0, 1].plot(epochs, f1, color="#FF9800", label="F1(macro)")
-    axes[0, 1].set_title("IoU & F1")
-    axes[0, 1].set_ylim(0, 1.05)
-    axes[0, 1].legend(fontsize=8)
-    axes[0, 1].set_xlabel("Epoch")
-
-    # (1,0) Precision + Recall
-    axes[1, 0].plot(epochs, precision, color="#9C27B0", label="Precision")
-    axes[1, 0].plot(epochs, recall, color="#00BCD4", label="Recall")
-    axes[1, 0].set_title("Precision & Recall")
-    axes[1, 0].set_ylim(0, 1.05)
-    axes[1, 0].legend(fontsize=8)
-    axes[1, 0].set_xlabel("Epoch")
-
-    # (1,1) LR
-    axes[1, 1].plot(epochs, lr, color="#607D8B")
-    axes[1, 1].set_title("Learning Rate")
-    axes[1, 1].ticklabel_format(axis="y", style="sci", scilimits=(-4, -3))
-    axes[1, 1].set_xlabel("Epoch")
+    # (2) Precision + Recall
+    axes[2].plot(epochs, precision, color="#9C27B0", label="Precision")
+    axes[2].plot(epochs, recall, color="#00BCD4", label="Recall")
+    axes[2].set_title("Precision & Recall")
+    axes[2].set_ylim(0, 1.05)
+    axes[2].legend(fontsize=9)
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("Score")
 
     # 在汇总图里标注最优值
     best_iou_idx = int(np.argmax(iou_c1))
     best_f1_idx = int(np.argmax(f1))
     summary_text = (
-        f"Best IoU(defect): {iou_c1[best_iou_idx]:.4f} @ epoch {epochs[best_iou_idx]}\n"
-        f"Best F1(macro):   {f1[best_f1_idx]:.4f} @ epoch {epochs[best_f1_idx]}\n"
-        f"Mean IoU(defect): {np.mean(iou_c1):.4f}\n"
-        f"Mean F1(macro):   {np.mean(f1):.4f}"
+        f"Best IoU(defect): {iou_c1[best_iou_idx]:.4f} @ epoch {epochs[best_iou_idx]}  |  "
+        f"Best F1(macro): {f1[best_f1_idx]:.4f} @ epoch {epochs[best_f1_idx]}  |  "
+        f"Mean IoU(defect): {np.mean(iou_c1):.4f}  |  "
+        f"Mean F1(macro): {np.mean(f1):.4f}"
     )
     fig.text(0.5, 0.01, summary_text, ha="center", fontsize=10,
              fontfamily="monospace",
              bbox=dict(boxstyle="round,pad=0.5", fc="#E3F2FD", ec="#90CAF9"))
 
     fig.suptitle(f"Training Metrics Summary — {experiment_name}", fontsize=14, y=0.98)
-    fig.tight_layout(rect=[0, 0.06, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.06, 1, 0.94])
     fig.savefig(os.path.join(vis_dir, "metrics_summary.png"), dpi=200)
     plt.close(fig)
 
@@ -406,7 +391,7 @@ def run_eval(cfg, seed, output_dir):
     metrics = SegmentationMetrics(num_classes=num_classes)
 
     # Evaluate
-    results, all_preds, all_masks, all_images, all_stems = evaluate(
+    results, all_preds, all_masks, all_images, all_images_raw, all_stems = evaluate(
         model, val_loader, metrics, device, num_classes
     )
 
@@ -432,7 +417,8 @@ def run_eval(cfg, seed, output_dir):
     num_vis = cfg.get("eval", {}).get("num_vis_samples", 10)
     visualize_predictions(
         all_images, all_preds, all_masks, all_stems,
-        eval_dir, vis_bands=vis_bands, num_samples=num_vis
+        eval_dir, vis_bands=vis_bands, num_samples=num_vis,
+        images_raw=all_images_raw,
     )
 
     print(f"Evaluation results saved to {eval_dir}")

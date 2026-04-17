@@ -28,9 +28,10 @@ def evaluate(model, dataloader, metrics, device, num_classes):
     all_preds = []
     all_masks = []
     all_images = []
+    all_images_raw = []
     all_stems = []
 
-    for images, masks, stems in dataloader:
+    for images, masks, images_raw, stems in dataloader:
         images_dev = images.to(device)
         masks_dev = masks.to(device)
 
@@ -42,14 +43,16 @@ def evaluate(model, dataloader, metrics, device, num_classes):
         all_preds.append(preds.cpu().numpy())
         all_masks.append(masks.numpy())
         all_images.append(images.numpy())
+        all_images_raw.append(images_raw.numpy())
         all_stems.extend(stems)
 
     all_preds = np.concatenate(all_preds, axis=0)
     all_masks = np.concatenate(all_masks, axis=0)
     all_images = np.concatenate(all_images, axis=0)
+    all_images_raw = np.concatenate(all_images_raw, axis=0)
 
     results = metrics.compute()
-    return results, all_preds, all_masks, all_images, all_stems
+    return results, all_preds, all_masks, all_images, all_images_raw, all_stems
 
 
 def plot_confusion_matrix(results, output_dir, num_classes):
@@ -81,45 +84,77 @@ def plot_confusion_matrix(results, output_dir, num_classes):
     plt.close(fig)
 
 
+def _normalize_band(band):
+    """Normalize a single band to [0, 1] using 2-98 percentile clipping."""
+    vmin, vmax = np.percentile(band, [2, 98])
+    if vmax - vmin > 1e-6:
+        return np.clip((band - vmin) / (vmax - vmin), 0, 1)
+    return np.zeros_like(band)
+
+
 def visualize_predictions(images, preds, masks, stems, output_dir,
-                          vis_bands=(0, 4, 8), num_samples=10):
-    """Visualize segmentation results: pseudo-color image | prediction | ground truth."""
+                          vis_bands=(0, 4, 8), num_samples=10,
+                          images_raw=None):
+    """Visualize segmentation results with all-band grid + sharpen comparison.
+
+    Layout per sample:
+        Row 1: all individual bands of the raw image (9 bands in a row)
+        Row 2: pseudo-color (raw) | pseudo-color (processed) | prediction | ground truth
+        If images_raw is provided and differs from images (sharpen active),
+        the second row shows the before/after comparison.
+    """
     vis_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(vis_dir, exist_ok=True)
 
     num_samples = min(num_samples, len(images))
-
     cmap = ListedColormap(["black", "red", "blue", "green", "yellow"][:max(preds.max() + 1, 2)])
 
     for i in range(num_samples):
-        img = images[i]
+        img = images[i]  # preprocessed (C, H, W)
         pred = preds[i]
         mask = masks[i]
         stem = stems[i]
+        img_raw = images_raw[i] if images_raw is not None else img
 
-        rgb = np.stack([img[b] for b in vis_bands], axis=-1)
-        for c in range(3):
-            vmin, vmax = np.percentile(rgb[:, :, c], [2, 98])
-            if vmax - vmin > 1e-6:
-                rgb[:, :, c] = np.clip((rgb[:, :, c] - vmin) / (vmax - vmin), 0, 1)
-            else:
-                rgb[:, :, c] = 0
+        n_bands_raw = img_raw.shape[0]
+        n_cols = max(n_bands_raw, 4)
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(2, n_cols, figsize=(3 * n_cols, 7))
 
-        axes[0].imshow(rgb)
-        axes[0].set_title(f"Pseudo-color (bands {vis_bands})")
-        axes[0].axis("off")
+        # Row 1: individual raw bands
+        for b in range(n_bands_raw):
+            axes[0, b].imshow(_normalize_band(img_raw[b]), cmap="gray", vmin=0, vmax=1)
+            axes[0, b].set_title(f"Band {b}", fontsize=8)
+            axes[0, b].axis("off")
+        for b in range(n_bands_raw, n_cols):
+            axes[0, b].axis("off")
 
-        axes[1].imshow(pred, cmap=cmap, vmin=0, vmax=max(preds.max(), 1))
-        axes[1].set_title("Prediction")
-        axes[1].axis("off")
+        # Row 2: pseudo-color raw | pseudo-color processed | prediction | ground truth
+        rgb_raw = np.stack([_normalize_band(img_raw[b]) for b in vis_bands], axis=-1)
+        rgb_proc = np.stack([_normalize_band(img[b]) for b in vis_bands if b < img.shape[0]], axis=-1)
+        if rgb_proc.shape[-1] < 3:
+            rgb_proc = rgb_raw
 
-        axes[2].imshow(mask, cmap=cmap, vmin=0, vmax=max(masks.max(), 1))
-        axes[2].set_title("Ground Truth")
-        axes[2].axis("off")
+        axes[1, 0].imshow(rgb_raw)
+        axes[1, 0].set_title("Raw pseudo-color", fontsize=9)
+        axes[1, 0].axis("off")
 
-        fig.suptitle(stem)
+        axes[1, 1].imshow(rgb_proc)
+        axes[1, 1].set_title("Processed pseudo-color", fontsize=9)
+        axes[1, 1].axis("off")
+
+        axes[1, 2].imshow(pred, cmap=cmap, vmin=0, vmax=max(preds.max(), 1))
+        axes[1, 2].set_title("Prediction", fontsize=9)
+        axes[1, 2].axis("off")
+
+        axes[1, 3].imshow(mask, cmap=cmap, vmin=0, vmax=max(masks.max(), 1))
+        axes[1, 3].set_title("Ground Truth", fontsize=9)
+        axes[1, 3].axis("off")
+
+        for b in range(4, n_cols):
+            axes[1, b].axis("off")
+
+        fig.suptitle(stem, fontsize=12)
         fig.tight_layout()
         fig.savefig(os.path.join(vis_dir, f"{stem}.png"), dpi=150)
         plt.close(fig)
@@ -173,7 +208,7 @@ def analyze_band_weights(model, dataloader, device, output_dir, experiment_name)
         # InputBandSE: collect per-image weights
         all_weights = []
         with torch.no_grad():
-            for images, _, _ in dataloader:
+            for images, _, _, _ in dataloader:
                 images_dev = images.to(device)
                 w = model.band_attention.get_weights(images_dev)  # (B, C)
                 all_weights.append(w)
@@ -323,7 +358,7 @@ def main():
     metrics = SegmentationMetrics(num_classes=num_classes)
 
     # Evaluate
-    results, all_preds, all_masks, all_images, all_stems = evaluate(
+    results, all_preds, all_masks, all_images, all_images_raw, all_stems = evaluate(
         model, dataloader, metrics, device, num_classes
     )
 
@@ -349,7 +384,8 @@ def main():
     vis_bands = tuple(cfg.get("eval", {}).get("vis_bands", [0, 4, 8]))
     visualize_predictions(
         all_images, all_preds, all_masks, all_stems,
-        args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis
+        args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis,
+        images_raw=all_images_raw,
     )
 
     print(f"Results saved to {args.output_dir}")

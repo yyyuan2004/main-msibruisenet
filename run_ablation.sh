@@ -2,7 +2,7 @@
 # ==============================================================================
 # Ablation Study Runner (自动化消融实验)
 #
-# 运行所有消融配置 x 多个随机种子的完整实验流程：
+# 运行所有保留的 8 个 config x 多个随机种子的完整实验流程：
 #   每个 seed 下跑完所有 config，再切换下一个 seed。
 #   每个 (config, seed) 组合自动完成: 训练 → 评估(val set) → 指标曲线图
 #
@@ -13,20 +13,16 @@
 
 set -e
 
-# 消融实验配置列表（不含 cross-method 对比实验）
+# 保留的 8 个 config：4 个自研架构 + 4 个 cross-method 对照
 CONFIGS=(
     "baseline"
-    "se"
-    "spconv"
     "spconv_se"
-    "cbam"
-    "aspp"
-    "band_attn"
-    "global_branch"
     "input_band_se"
-    "input_band_se_with_se"
-    "lcn_baseline"
-    "pca_baseline"
+    "global_branch"
+    "smp_deeplabv3plus_mobilenetv2"
+    "smp_fpn_efficientnetb0"
+    "smp_unet_resnet34"
+    "deeplabv3plus_fang"
 )
 
 SEEDS=(42 123 456)
@@ -90,50 +86,12 @@ for seed in "${SEEDS[@]}"; do
     done
 done
 
-# Step 3: Cross-method comparison configs (if they exist)
-CROSS_CONFIGS=(
-    "deeplabv3plus_fang"
-    "smp_deeplabv3plus_mobilenetv2"
-    "smp_fpn_efficientnetb0"
-    "smp_unet_resnet34"
-)
-
-HAS_CROSS=false
-for config in "${CROSS_CONFIGS[@]}"; do
-    if [ -f "configs/${config}.yaml" ]; then
-        HAS_CROSS=true
-        break
-    fi
-done
-
-if [ "$HAS_CROSS" = true ]; then
-    echo ""
-    echo "############################################################"
-    echo "# Cross-Method Comparison Experiments"
-    echo "############################################################"
-
-    for seed in "${SEEDS[@]}"; do
-        for config in "${CROSS_CONFIGS[@]}"; do
-            if [ -f "configs/${config}.yaml" ]; then
-                echo ""
-                echo "=============================================="
-                echo " Train-Eval: ${config} | Seed: ${seed}"
-                echo "=============================================="
-                python train_eval.py \
-                    --config "configs/${config}.yaml" \
-                    --seed "${seed}" \
-                    --output_dir "outputs/${config}_seed${seed}"
-            fi
-        done
-    done
-fi
-
-# Step 4: 汇总结果
+# Step 3: 汇总结果
 echo ""
 echo "=============================================="
 echo " Aggregating results..."
 echo "=============================================="
-python aggregate_results.py
+python aggregate_results.py || echo "(aggregate_results.py skipped/failed)"
 
 echo ""
 echo "=============================================="
