@@ -43,7 +43,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     total_loss = 0.0
     num_batches = 0
 
-    for images, masks, _ in dataloader:
+    for images, masks, _raw, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
 
@@ -67,7 +67,7 @@ def validate(model, dataloader, criterion, metrics, device):
     num_batches = 0
     metrics.reset()
 
-    for images, masks, _ in dataloader:
+    for images, masks, _raw, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
 
