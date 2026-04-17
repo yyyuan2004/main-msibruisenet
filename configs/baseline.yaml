@@ -1,14 +1,35 @@
-# Baseline: EfficientNet-B0-UNet without any enhancement modules
+# ============================================================================
+# Config: baseline — MobileNetV2-UNet 基线（无任何注意力/增强模块）
+# ----------------------------------------------------------------------------
+# 工作流：
+#   [1] 数据读取   : 加载 185 张 9波段 .npy 图像与 0/1 二值 mask
+#   [2] 预处理     : (可选 band_indices 波段选择 / 可选 use_sharpen 锐化)
+#                   本 config 均关闭，使用完整 9 波段原始反射率
+#   [3] 数据划分   : train:val = 7:3（由 data/split.py 实现，seed 控制）
+#   [4] 数据增强   : 仅空间变换 (H-flip, V-flip, 90/180/270° 旋转)
+#                   不做亮度/对比度扰动 — 光谱反射率具有物理意义
+#   [5] 模型结构   : MobileNetV2 (ImageNet pretrained, 首层改为 9ch)
+#                   → UNet decoder (skip_module="none")
+#                   → 1x1 分割头 → 双线性上采样到原图尺寸
+#   [6] 损失函数   : 0.5 * CrossEntropy + 0.5 * Dice
+#   [7] 优化器     : AdamW (lr=5e-4, wd=1e-4) + CosineAnnealingLR (eta_min=1e-6)
+#   [8] 训练策略   : 500 epochs, 早停 patience=50 (监控 class1 IoU)
+#                   best_model.pth 始终为历史最优
+#   [9] 评估       : 在 val set 上计算 class1 IoU / F1 / Precision / Recall
+#   [10] 可视化    : train_eval.py 自动生成指标曲线 + 预测可视化
+# ============================================================================
+
 experiment_name: "baseline"
 
 model:
   num_classes: 2
-  encoder_name: "mobilenetv2"
+  encoder_name: "mobilenetv2"    # 可选: mobilenetv2 / mobilenetv3 / efficientnet_b0
   encoder_pretrained: true
-  # Skip connection enhancement module: none / se / convglu
-  skip_module: "none"
-  # Spectral conv after S1: true / false
+  skip_module: "none"            # none / se / cbam
   use_spectral_conv: false
+  use_aspp: false
+  use_band_attention: false
+  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
@@ -18,6 +39,12 @@ data:
   num_classes: 2
   image_size: 512
   crop_size: 384
+  # 波段选择 (null = 使用全部 9 波段；若指定则 num_channels 需与长度一致)
+  band_indices: null
+  # 锐化预处理 (Unsharp Masking)
+  use_sharpen: false
+  sharpen_sigma: 1.0
+  sharpen_alpha: 1.5
 
 train:
   batch_size: 32
@@ -27,28 +54,23 @@ train:
   weight_decay: 1.0e-4
   scheduler: "cosine"
   eta_min: 1.0e-6
-  loss: "ce_dice"      # ce_dice / focal_dice
-  focal_gamma: 2.0
-  focal_alpha: 0.25
-  dice_weight: 0.5
+  loss: "ce_dice"
   ce_weight: 0.5
+  dice_weight: 0.5
+  save_interval: 99999            # 禁用周期性 checkpoint
+  early_stopping_patience: 50     # class1 IoU 连续 50 epoch 无提升则停止
+  val_interval: 1
+  num_workers: 4
+  pin_memory: true
 
-  # Data augmentation
   augment:
     horizontal_flip: true
     vertical_flip: true
     random_rotation: true
     elastic_transform: false
     gaussian_noise: false
-    gaussian_noise_std: 0.01
-
-  # Validation and checkpointing
-  val_interval: 1
-  save_interval: 99999
-  num_workers: 4
-  pin_memory: true
 
 eval:
   visualize: true
   num_vis_samples: 10
-  vis_bands: [0, 4, 8]   # bands for pseudo-color display (1st/5th/9th)
+  vis_bands: [0, 4, 8]            # 伪彩色显示用的波段索引 (1st/5th/9th)

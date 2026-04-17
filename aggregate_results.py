@@ -7,14 +7,25 @@ import numpy as np
 from collections import defaultdict
 
 
-CONFIGS = ["baseline", "se", "spconv", "spconv_se", "cbam", "aspp"]
+CONFIGS = [
+    "baseline",
+    "spconv_se",
+    "input_band_se",
+    "global_branch",
+    "smp_deeplabv3plus_mobilenetv2",
+    "smp_fpn_efficientnetb0",
+    "smp_unet_resnet34",
+    "deeplabv3plus_fang",
+]
 CONFIG_DISPLAY = {
     "baseline": "baseline",
-    "se": "+SE",
-    "spconv": "+1D-SpConv",
-    "spconv_se": "+1D-SpConv+SE",
-    "cbam": "+CBAM",
-    "aspp": "+ASPP",
+    "spconv_se": "+SpConv+SE",
+    "input_band_se": "+InputBandSE",
+    "global_branch": "+GlobalBranch",
+    "smp_deeplabv3plus_mobilenetv2": "smp-DLv3+-MV2",
+    "smp_fpn_efficientnetb0": "smp-FPN-EffB0",
+    "smp_unet_resnet34": "smp-UNet-R34",
+    "deeplabv3plus_fang": "Fang-DLv3+",
 }
 SEEDS = [42, 123, 456]
 METRICS = ["mIoU", "F1_macro", "Precision_macro", "Recall_macro"]

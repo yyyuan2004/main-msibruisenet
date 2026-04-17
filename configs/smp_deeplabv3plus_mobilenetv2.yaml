@@ -1,4 +1,17 @@
-# SMP DeepLabV3Plus with MobileNetV2 encoder (comparison baseline)
+# ============================================================================
+# Config: smp_deeplabv3plus_mobilenetv2 — SMP DeepLabV3+ with MobileNetV2 encoder
+# ----------------------------------------------------------------------------
+# 工作流：
+#   [1-4] 数据/预处理/划分/增强 与 baseline 完全一致
+#   [5]   模型：segmentation_models_pytorch 的 DeepLabV3+ 封装
+#           - Encoder: MobileNetV2 (ImageNet pretrained, in_channels=9 自动适配)
+#           - ASPP bottleneck + 1/4 级别 low-level feature 融合
+#           - 由 model/smp_models.py::build_smp_model() 构建
+#   [6-10] 损失/优化器/训练/评估/可视化 与 baseline 一致
+#
+#   作为 cross-method 对照，说明自研架构相较成熟 smp 实现的优劣。
+# ============================================================================
+
 experiment_name: "smp_deeplabv3plus_mv2"
 
 model:
@@ -16,6 +29,10 @@ data:
   num_classes: 2
   image_size: 512
   crop_size: 384
+  band_indices: null
+  use_sharpen: false
+  sharpen_sigma: 1.0
+  sharpen_alpha: 1.5
 
 train:
   batch_size: 32
@@ -26,10 +43,13 @@ train:
   scheduler: "cosine"
   eta_min: 1.0e-6
   loss: "ce_dice"
-  focal_gamma: 2.0
-  focal_alpha: 0.25
-  dice_weight: 0.5
   ce_weight: 0.5
+  dice_weight: 0.5
+  save_interval: 99999
+  early_stopping_patience: 50
+  val_interval: 1
+  num_workers: 4
+  pin_memory: true
 
   augment:
     horizontal_flip: true
@@ -37,12 +57,6 @@ train:
     random_rotation: true
     elastic_transform: false
     gaussian_noise: false
-    gaussian_noise_std: 0.01
-
-  val_interval: 1
-  save_interval: 99999
-  num_workers: 4
-  pin_memory: true
 
 eval:
   visualize: true

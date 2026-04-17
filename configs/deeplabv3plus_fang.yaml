@@ -1,6 +1,23 @@
-# Fang 2025 Improved DeepLabV3+ with DSConv ASPP + ECA
-# Reference: Fang et al. 2025, "Multispectral imaging-based detection of apple
-# bruises using segmentation network and classification model"
+# ============================================================================
+# Config: deeplabv3plus_fang — Fang 2025 Improved DeepLabV3+
+# ----------------------------------------------------------------------------
+# 参考：Fang et al. 2025 "Multispectral imaging-based detection of apple bruises
+#       using segmentation network and classification model"
+#
+# 工作流：
+#   [1-4] 数据/预处理/划分/增强 与 baseline 完全一致
+#   [5]   模型：Fang 改进版 DeepLabV3+
+#           - Encoder: MobileNetV2 (ImageNet pretrained, 9ch 适配)
+#           - DSConv ASPP: 深度可分离卷积版 ASPP，大幅降低 ASPP 参数量
+#           - ECA (Efficient Channel Attention): 轻量级无降维通道注意力
+#           - Low-level feature (48ch) 融合到解码端
+#           - 由 model/deeplabv3plus.py::build_deeplabv3plus_fang() 构建
+#   [6]   损失：Focal Loss (γ=2, α=0.25) — 强正负样本失衡场景
+#   [7-10] 优化器/训练/评估/可视化 与 baseline 一致
+#
+#   作为直接对照实验，复现 2025 年同场景论文方法，验证自研架构相对位置。
+# ============================================================================
+
 experiment_name: "deeplabv3plus_fang"
 
 model:
@@ -19,6 +36,10 @@ data:
   num_classes: 2
   image_size: 512
   crop_size: 384
+  band_indices: null
+  use_sharpen: false
+  sharpen_sigma: 1.0
+  sharpen_alpha: 1.5
 
 train:
   batch_size: 32
@@ -31,6 +52,11 @@ train:
   loss: "focal"
   focal_gamma: 2.0
   focal_alpha: 0.25
+  save_interval: 99999
+  early_stopping_patience: 50
+  val_interval: 1
+  num_workers: 4
+  pin_memory: true
 
   augment:
     horizontal_flip: true
@@ -38,12 +64,6 @@ train:
     random_rotation: true
     elastic_transform: false
     gaussian_noise: false
-    gaussian_noise_std: 0.01
-
-  val_interval: 1
-  save_interval: 99999
-  num_workers: 4
-  pin_memory: true
 
 eval:
   visualize: true
