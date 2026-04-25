@@ -7,8 +7,10 @@
 #   每个 (config, seed) 组合自动完成: 训练 → 评估(val set) → 指标曲线图
 #
 # 用法:
-#   bash run_ablation.sh                    # 运行全部
-#   bash run_ablation.sh --vis_augment      # 额外生成增强可视化（仅首次）
+#   bash run_ablation.sh                          # 7:3 划分（默认）
+#   bash run_ablation.sh --kfold 5                # 5-fold 交叉验证
+#   bash run_ablation.sh --vis_augment            # 7:3 + 生成增强可视化
+#   bash run_ablation.sh --kfold 5 --vis_augment  # 5-fold + 增强可视化
 # ==============================================================================
 
 set -e
@@ -27,16 +29,38 @@ CONFIGS=(
 
 SEEDS=(42 123 456)
 
-# 是否生成增强可视化（从命令行参数获取）
+# 解析命令行参数
+KFOLD=0
 VIS_AUGMENT=""
-if [[ "$1" == "--vis_augment" ]]; then
-    VIS_AUGMENT="--vis_augment"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --kfold)
+            KFOLD="$2"
+            shift 2
+            ;;
+        --vis_augment)
+            VIS_AUGMENT="--vis_augment"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            shift
+            ;;
+    esac
+done
+
+KFOLD_FLAG=""
+MODE_DESC="default 7:3 split"
+if [ "$KFOLD" -gt 0 ]; then
+    KFOLD_FLAG="--kfold ${KFOLD}"
+    MODE_DESC="${KFOLD}-fold cross-validation"
 fi
 
 echo "=============================================="
 echo " MSI Bruise Ablation Study (Automated)"
 echo " Configs: ${CONFIGS[*]}"
 echo " Seeds:   ${SEEDS[*]}"
+echo " Mode:    ${MODE_DESC}"
 echo " Strategy: all configs per seed, then next seed"
 echo "=============================================="
 
@@ -68,7 +92,7 @@ for seed in "${SEEDS[@]}"; do
     for config in "${CONFIGS[@]}"; do
         echo ""
         echo "=============================================="
-        echo " Train-Eval: ${config} | Seed: ${seed}"
+        echo " Train-Eval: ${config} | Seed: ${seed} | Mode: ${MODE_DESC}"
         echo "=============================================="
 
         EXTRA_FLAGS=""
@@ -78,20 +102,29 @@ for seed in "${SEEDS[@]}"; do
             FIRST_RUN=false
         fi
 
+        if [ "$KFOLD" -gt 0 ]; then
+            OUTPUT_DIR="outputs/${config}_seed${seed}_kfold${KFOLD}"
+        else
+            OUTPUT_DIR="outputs/${config}_seed${seed}"
+        fi
+
         python train_eval.py \
             --config "configs/${config}.yaml" \
             --seed "${seed}" \
-            --output_dir "outputs/${config}_seed${seed}" \
+            --output_dir "${OUTPUT_DIR}" \
+            ${KFOLD_FLAG} \
             ${EXTRA_FLAGS}
     done
 done
 
-# Step 3: 汇总结果
-echo ""
-echo "=============================================="
-echo " Aggregating results..."
-echo "=============================================="
-python aggregate_results.py || echo "(aggregate_results.py skipped/failed)"
+# Step 3: 汇总结果（仅 7:3 模式下，k-fold 模式各 run 已自带聚合）
+if [ "$KFOLD" -eq 0 ]; then
+    echo ""
+    echo "=============================================="
+    echo " Aggregating results..."
+    echo "=============================================="
+    python aggregate_results.py || echo "(aggregate_results.py skipped/failed)"
+fi
 
 echo ""
 echo "=============================================="

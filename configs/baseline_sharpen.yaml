@@ -35,11 +35,11 @@ data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
   image_dir: "images"
   mask_dir: "masks"
-  num_channels: 9
+  num_channels: 4
   num_classes: 2
   image_size: 512
   crop_size: 384
-  band_indices: null
+  band_indices: [0, 2, 4, 5]
   # 开启 Unsharp Masking 锐化
   use_sharpen: true
   sharpen_sigma: 1.0
@@ -53,6 +53,9 @@ train:
   weight_decay: 1.0e-4
   scheduler: "cosine"
   eta_min: 1.0e-6
+  use_warmup: false
+  warmup_epochs: 5
+  warmup_start_factor: 0.01
   loss: "ce_dice"
   ce_weight: 0.5
   dice_weight: 0.5
