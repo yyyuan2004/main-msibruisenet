@@ -387,3 +387,62 @@ class GlobalSaliencyBranch(nn.Module):
         """Return attention map for visualization (detached numpy)."""
         with torch.no_grad():
             return self.forward(x, bottleneck_size).cpu().numpy()
+
+
+class SpectralDifferenceAttention(nn.Module):
+    """Spectral Difference Attention (SDA).
+
+    Computes the spectral residual (pixel spectrum minus local-mean spectrum)
+    and uses its L2 norm as a spatial anomaly map.  Healthy pixels have near-zero
+    residuals (spectrally homogeneous neighbourhoods), whereas defect and
+    boundary pixels produce large residuals.
+
+    Two usage modes controlled by ``mode``:
+        * ``"input"`` — placed before/after the encoder on raw MSI input
+          (replaces InputBandSE position).  Config field: ``use_sda_input``.
+        * ``"skip"``  — placed at each decoder skip connection
+          (replaces SE / CBAM position).  Config field: ``skip_module: "sda"``.
+
+    Args:
+        mode: ``"input"`` or ``"skip"``.  Only cosmetic (both share the same
+              forward path); kept for clarity in logs / repr.
+        learnable_gate: If True, adds a 1×1 conv + sigmoid gate on the
+                        anomaly map (2 learnable params).  Otherwise pure
+                        computation (0 params).
+    """
+
+    def __init__(self, mode="input", learnable_gate=True):
+        super().__init__()
+        self.mode = mode
+        self.learnable_gate = learnable_gate
+        self.avg_pool = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
+        if learnable_gate:
+            self.gate_conv = nn.Conv2d(1, 1, kernel_size=1, bias=True)
+
+    def _anomaly_map(self, x):
+        """Compute normalized anomaly map from input tensor."""
+        x_local_mean = self.avg_pool(x)
+        spectral_residual = x - x_local_mean
+        anomaly_map = torch.norm(spectral_residual, dim=1, keepdim=True)
+        anomaly_map = anomaly_map / (anomaly_map.amax(dim=(2, 3), keepdim=True) + 1e-6)
+        return anomaly_map
+
+    def forward(self, x):
+        anomaly_map = self._anomaly_map(x)
+        if self.learnable_gate:
+            gate = torch.sigmoid(self.gate_conv(anomaly_map))
+        else:
+            gate = anomaly_map
+        return x * (1 + gate)
+
+    def get_anomaly_map(self, x):
+        """Return anomaly map as numpy array for visualization.
+
+        Args:
+            x: (B, C, H, W) input tensor.
+
+        Returns:
+            (B, 1, H, W) numpy array in [0, 1].
+        """
+        with torch.no_grad():
+            return self._anomaly_map(x).cpu().numpy()

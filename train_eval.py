@@ -41,7 +41,7 @@ from data.augment import (
 from data.split import get_data_splits, get_kfold_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
-from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, _normalize_band
+from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, save_sda_anomaly_maps, _normalize_band
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +390,9 @@ def run_eval(cfg, seed, output_dir, splits=None):
 
     # Band attention analysis
     analyze_band_weights(model, val_loader, device, eval_dir, cfg["experiment_name"])
+
+    # SDA anomaly heatmaps (auto-skipped if model has no sda_input)
+    save_sda_anomaly_maps(model, val_loader, device, eval_dir)
 
     # Metrics
     num_classes = cfg["data"]["num_classes"]

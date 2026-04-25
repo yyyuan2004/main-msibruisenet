@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .modules import SEBlock, CBAMBlock
+from .modules import SEBlock, CBAMBlock, SpectralDifferenceAttention
 
 
 class ConvBNReLU(nn.Module):
@@ -35,7 +35,7 @@ class DecoderBlock(nn.Module):
         in_channels: Channels from upsampled feature (before concat).
         skip_channels: Channels from skip connection.
         out_channels: Output channels for this decoder level.
-        skip_module: Module type — "none", "se", or "cbam".
+        skip_module: Module type — "none", "se", "cbam", or "sda".
         se_reduction: SE/CBAM reduction ratio.
     """
 
@@ -54,6 +54,10 @@ class DecoderBlock(nn.Module):
             self.cbam = CBAMBlock(concat_channels, reduction=se_reduction)
             self.conv1 = ConvBNReLU(concat_channels, out_channels)
             self.conv2 = ConvBNReLU(out_channels, out_channels)
+        elif skip_module == "sda":
+            self.sda = SpectralDifferenceAttention(mode="skip", learnable_gate=True)
+            self.conv1 = ConvBNReLU(concat_channels, out_channels)
+            self.conv2 = ConvBNReLU(out_channels, out_channels)
         else:
             # Baseline: standard double Conv-BN-ReLU
             self.conv1 = ConvBNReLU(concat_channels, out_channels)
@@ -70,15 +74,13 @@ class DecoderBlock(nn.Module):
 
         if self.skip_module_type == "se":
             x = self.se(x)
-            x = self.conv1(x)
-            x = self.conv2(x)
         elif self.skip_module_type == "cbam":
             x = self.cbam(x)
-            x = self.conv1(x)
-            x = self.conv2(x)
-        else:
-            x = self.conv1(x)
-            x = self.conv2(x)
+        elif self.skip_module_type == "sda":
+            x = self.sda(x)
+
+        x = self.conv1(x)
+        x = self.conv2(x)
 
         return x
 

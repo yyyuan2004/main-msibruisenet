@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, MobileNetV3Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP, BandAttention, InputBandSE, GlobalSaliencyBranch, SEBlock
+from .modules import SpectralConv1D, ASPP, BandAttention, InputBandSE, GlobalSaliencyBranch, SEBlock, SpectralDifferenceAttention
 
 
 # Encoder registry: name -> class
@@ -46,8 +46,16 @@ class SegmentationModel(nn.Module):
                  aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5,
                  use_band_attention=False,
                  band_attention_type="static", band_se_reduction=2,
-                 use_global_branch=False, global_downsample=4):
+                 use_global_branch=False, global_downsample=4,
+                 use_sda_input=False, sda_learnable_gate=True):
         super().__init__()
+
+        # Optional SDA at input level (spectral difference attention)
+        self.use_sda_input = use_sda_input
+        if use_sda_input:
+            self.sda_input = SpectralDifferenceAttention(
+                mode="input", learnable_gate=sda_learnable_gate,
+            )
 
         # Optional band attention at input level (before encoder)
         # "static" = BandAttention (fixed per-band scalars, 9 params)
@@ -123,9 +131,12 @@ class SegmentationModel(nn.Module):
     def forward(self, x):
         input_size = x.shape[2:]
 
-        # Save original input for global branch (before band attention)
+        # Save original input for global branch (before any input-level attention)
         if self.use_global_branch:
             x_input = x
+
+        if self.use_sda_input:
+            x = self.sda_input(x)
 
         if self.use_band_attention:
             x = self.band_attention(x)
@@ -204,6 +215,8 @@ def build_model(cfg):
         band_se_reduction=model_cfg.get("band_se_reduction", 2),
         use_global_branch=model_cfg.get("use_global_branch", False),
         global_downsample=model_cfg.get("global_downsample", 4),
+        use_sda_input=model_cfg.get("use_sda_input", False),
+        sda_learnable_gate=model_cfg.get("sda_learnable_gate", True),
     )
 
     return model
