@@ -46,8 +46,8 @@ def get_data_splits(data_dir, image_dir="images", seed=42,
 def get_kfold_splits(data_dir, image_dir="images", n_splits=5, seed=42):
     """Generate k-fold cross-validation splits.
 
-    For each fold, one fold is held out as test, and the remaining
-    are split into train (80%) and val (20%).
+    Each fold yields a (train, val) split where val is the held-out fold.
+    No separate test set — val acts as the test for that fold.
 
     Args:
         data_dir: Root data directory.
@@ -56,7 +56,7 @@ def get_kfold_splits(data_dir, image_dir="images", n_splits=5, seed=42):
         seed: Random seed for reproducibility.
 
     Returns:
-        List of dicts, each with keys 'train', 'val', 'test'.
+        List of dicts, each with keys 'train', 'val', 'test' (test=[] for compat).
     """
     image_root = os.path.join(data_dir, image_dir)
     stems = sorted([f[:-4] for f in os.listdir(image_root) if f.endswith(".npy")])
@@ -64,18 +64,11 @@ def get_kfold_splits(data_dir, image_dir="images", n_splits=5, seed=42):
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
     folds = []
-    for train_val_idx, test_idx in kf.split(stems):
-        # Further split train_val into train and val
-        rng = np.random.RandomState(seed)
-        n_val = max(1, int(len(train_val_idx) * 0.2))
-        perm = rng.permutation(len(train_val_idx))
-        val_idx = train_val_idx[perm[:n_val]]
-        train_idx = train_val_idx[perm[n_val:]]
-
+    for train_idx, val_idx in kf.split(stems):
         folds.append({
             "train": [stems[i] for i in train_idx],
             "val": [stems[i] for i in val_idx],
-            "test": [stems[i] for i in test_idx],
+            "test": [],
         })
 
     return folds

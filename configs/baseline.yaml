@@ -35,12 +35,12 @@ data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
   image_dir: "images"
   mask_dir: "masks"
-  num_channels: 9
+  num_channels: 4
   num_classes: 2
   image_size: 512
   crop_size: 384
-  # 波段选择 (null = 使用全部 9 波段；若指定则 num_channels 需与长度一致)
-  band_indices: null
+  # 波段选择 (默认从 9 波段中选 4 个: 0,2,4,5；num_channels 需与长度一致)
+  band_indices: [0, 2, 4, 5]
   # 锐化预处理 (Unsharp Masking)
   use_sharpen: false
   sharpen_sigma: 1.0
@@ -54,6 +54,10 @@ train:
   weight_decay: 1.0e-4
   scheduler: "cosine"
   eta_min: 1.0e-6
+  # Warmup（线性预热到目标 lr，再走 cosine annealing）
+  use_warmup: false               # 总开关
+  warmup_epochs: 5
+  warmup_start_factor: 0.01       # 初始 lr = lr * start_factor
   loss: "ce_dice"
   ce_weight: 0.5
   dice_weight: 0.5

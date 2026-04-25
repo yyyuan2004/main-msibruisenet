@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from data.dataset import MSIDataset, get_dataset_kwargs
 from data.augment import get_train_transforms, get_val_transforms
@@ -85,21 +85,30 @@ def validate(model, dataloader, criterion, metrics, device):
     return avg_loss, results
 
 
-def train(cfg, seed, output_dir):
-    """Main training loop."""
+def train(cfg, seed, output_dir, splits=None):
+    """Main training loop.
+
+    Args:
+        cfg: Config dict.
+        seed: Random seed for reproducibility.
+        output_dir: Output directory for checkpoints/logs.
+        splits: Optional pre-computed splits dict {'train': [...], 'val': [...], 'test': [...]}.
+                If None, splits are computed via get_data_splits().
+    """
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
     # Data splits
     data_dir = cfg["data"]["data_dir"]
-    splits = get_data_splits(
-        data_dir=data_dir,
-        image_dir=cfg["data"]["image_dir"],
-        seed=seed,
-    )
+    if splits is None:
+        splits = get_data_splits(
+            data_dir=data_dir,
+            image_dir=cfg["data"]["image_dir"],
+            seed=seed,
+        )
     print(f"Train: {len(splits['train'])}, Val: {len(splits['val'])}, "
-          f"Test: {len(splits['test'])}")
+          f"Test: {len(splits.get('test', []))}")
 
     # Transforms
     train_transform = get_train_transforms(cfg)
@@ -165,12 +174,37 @@ def train(cfg, seed, output_dir):
         weight_decay=train_cfg.get("weight_decay", 1e-4),
     )
 
-    # Scheduler
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=train_cfg["num_epochs"],
-        eta_min=train_cfg.get("eta_min", 1e-6),
-    )
+    # Scheduler: optional linear warmup → CosineAnnealing
+    num_epochs = train_cfg["num_epochs"]
+    eta_min = train_cfg.get("eta_min", 1e-6)
+    use_warmup = train_cfg.get("use_warmup", False)
+    warmup_epochs = train_cfg.get("warmup_epochs", 5)
+    if use_warmup and warmup_epochs > 0:
+        warmup_start_factor = train_cfg.get("warmup_start_factor", 0.01)
+        warmup = LinearLR(
+            optimizer,
+            start_factor=warmup_start_factor,
+            end_factor=1.0,
+            total_iters=warmup_epochs,
+        )
+        cosine = CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, num_epochs - warmup_epochs),
+            eta_min=eta_min,
+        )
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs],
+        )
+        print(f"Scheduler: linear warmup({warmup_epochs}ep, start_factor={warmup_start_factor}) "
+              f"→ CosineAnnealing({num_epochs - warmup_epochs}ep, η_min={eta_min})")
+    else:
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=num_epochs,
+            eta_min=eta_min,
+        )
 
     # Metrics
     num_classes = cfg["data"]["num_classes"]

@@ -29,12 +29,12 @@
 
 ```
  [1] 数据读取     ── 9ch .npy + 二值 mask
- [2] 预处理       ── (可选) band_indices / unsharp mask / LCN / PCA
- [3] 数据划分     ── train:val = 7:3（固定 seed）
+ [2] 预处理       ── 默认 band_indices=[0,2,4,5] 选 4 波段 / 可选 unsharp mask / LCN / PCA
+ [3] 数据划分     ── train:val = 7:3（默认）或 k-fold 交叉验证（--kfold N）
  [4] 数据增强     ── 水平/垂直翻转、90°/180°/270° 旋转（无颜色增强）
  [5] 模型前向     ── Encoder → (可选 ASPP/SpConv/BandSE/GlobalBranch) → Decoder → 1x1 seg head
  [6] 损失函数     ── 0.5·CE + 0.5·Dice（Fang 版用 Focal）
- [7] 优化器       ── AdamW + CosineAnnealingLR(T_max=epochs, η_min=1e-6)
+ [7] 优化器       ── AdamW + (可选 LinearWarmup → ) CosineAnnealingLR(η_min=1e-6)
  [8] 训练策略     ── 500 epochs；early stopping on class-1 IoU (patience=50)
  [9] 评估         ── val set：class-1 IoU / F1 / Precision / Recall
  [10] 可视化      ── train_eval.py 自动产出 metric 曲线 + 预测对比图
@@ -94,16 +94,25 @@ python -m utils.spectral_analysis \
     --data_dir /root/autodl-tmp/datasets/185_9bands \
     --output_dir outputs/spectral_analysis
 
-# 3. 单 config 训练+评估+出图
+# 3. 单 config 训练+评估+出图（7:3 划分，默认）
 python train_eval.py \
     --config configs/baseline.yaml \
     --seed 42 \
     --output_dir outputs/baseline_seed42
 
-# 4. 全量消融（8 configs × 3 seeds = 24 次）
+# 3'. 单 config 5-fold 交叉验证
+python train_eval.py \
+    --config configs/baseline.yaml \
+    --seed 42 \
+    --kfold 5
+
+# 4. 全量消融（8 configs × 3 seeds = 24 次，7:3 划分）
 bash run_ablation.sh
 
-# 5. 聚合结果
+# 4'. 全量消融 + k-fold（8 configs × 3 seeds × 5 folds = 120 次）
+bash run_ablation.sh --kfold 5
+
+# 5. 聚合结果（7:3 模式）
 python aggregate_results.py
 # → outputs/ablation_table.txt
 ```
@@ -116,6 +125,7 @@ python aggregate_results.py
 |------|------|
 | Optimizer | AdamW, weight_decay=1e-4 |
 | Learning Rate | 5e-4，CosineAnnealing to 1e-6 |
+| Warmup | 可选（`use_warmup`），默认关闭；linear warmup 5 epochs, start_factor=0.01 |
 | Epochs | 500 |
 | Batch Size | 32 |
 | Loss | 0.5·CE + 0.5·Dice（`deeplabv3plus_fang` 用 Focal γ=2, α=0.25） |
@@ -123,6 +133,8 @@ python aggregate_results.py
 | Augmentation | h-flip / v-flip / {90,180,270}° 旋转 |
 | Early Stopping | class-1 IoU, patience=50 |
 | save_interval | 99999（只保存 best_model.pth） |
+| 默认波段 | `band_indices=[0,2,4,5]`，`num_channels=4` |
+| 数据划分 | 7:3 单 split（默认），或 k-fold 交叉验证（`--kfold N`） |
 
 > `train.py` 的 early stopping 基于验证集 **class-1 (defect) IoU** 相对历史最佳是否有提升；
 > 仅当 IoU 提升时才覆盖写 `best_model.pth`，到达 patience 时提前终止。
@@ -149,20 +161,29 @@ python aggregate_results.py
 
 ---
 
-## 7. 可选预处理
+## 7. 可选预处理与训练开关
 
-所有 config 都暴露以下开关（默认关闭）：
+所有 config 都暴露以下开关：
 
 ```yaml
 data:
-  band_indices: null        # 例: [0, 3, 5, 8] 表示只用这 4 个波段
-  use_sharpen: false        # 是否做 Unsharp Masking
-  sharpen_sigma: 1.0        # 高斯模糊 σ
-  sharpen_alpha: 1.5        # 锐化强度
+  num_channels: 4               # 必须与 band_indices 长度一致
+  band_indices: [0, 2, 4, 5]    # 默认从 9 波段中选 4 个；null 表示用全 9 波段
+  use_sharpen: false            # 是否做 Unsharp Masking
+  sharpen_sigma: 1.0            # 高斯模糊 σ
+  sharpen_alpha: 1.5            # 锐化强度
+
+train:
+  # 学习率 warmup（线性预热到目标 lr，再走 CosineAnnealing）
+  use_warmup: false             # 总开关
+  warmup_epochs: 5              # 预热长度
+  warmup_start_factor: 0.01     # 起始 lr = lr * start_factor
 ```
 
-- **波段子集搜索**：`python scripts/band_search.py --k 4` 会在 C(9,k) 里穷举验证哪几个波段组合最优。
-- **Unsharp Masking**：`configs/baseline_sharpen.yaml` 提供了开启锐化的对照 config。
+- **波段子集搜索**：`python scripts/band_search.py --k 4` 在 C(9,k) 里穷举验证哪几个波段组合最优。
+- **Unsharp Masking**：`configs/baseline_sharpen.yaml` 提供开启锐化的对照 config。
+- **K-fold 交叉验证**：`python train_eval.py --config X --kfold 5` 自动跑 5 折并输出 `kfold_summary.json`（mean ± std）。
+- **Warmup**：在 config 中设 `use_warmup: true` 即可启用线性预热。
 
 ---
 
@@ -175,22 +196,31 @@ data:
 
 ---
 
-## 9. 输出目录结构（每个 run）
+## 9. 输出目录结构
 
+**单 split 模式（默认 7:3）：**
 ```
 outputs/<config>_seed<seed>/
-├── checkpoints/
-│   └── best_model.pth
-├── logs/
-│   └── training_log.json        # 每 epoch 的 loss / metric / lr
-├── metric_curves/
+├── checkpoints/best_model.pth
+├── training_log.json            # 每 epoch 的 loss / metric / lr
+├── visualization/
 │   ├── loss_curve.png
 │   ├── iou_f1_curve.png
-│   └── summary.png              # 3-panel 合图
-├── eval_results/
-│   ├── results.json
-│   └── visualizations/          # 预测对比图（含多波段 grid + sharpen 对比）
-└── augment_preview/             # （--vis_augment 时生成）
+│   ├── precision_recall_curve.png
+│   └── metrics_summary.png      # 3-panel 合图
+└── eval_results/
+    ├── results.json
+    ├── confusion_matrix.png
+    └── visualizations/          # 预测对比图（含多波段 grid + sharpen 对比）
+```
+
+**K-fold 模式：**
+```
+outputs/<config>_seed<seed>_kfold<N>/
+├── fold0/                       # 同上结构
+├── fold1/
+├── ...
+└── kfold_summary.json           # 跨折聚合 mean ± std
 ```
 
 ---

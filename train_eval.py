@@ -38,7 +38,7 @@ from data.augment import (
     RandomCrop, ElasticTransform, Cutout, GaussianBlur, IntensityJitter,
     GaussianNoise, Resize,
 )
-from data.split import get_data_splits
+from data.split import get_data_splits, get_kfold_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
 from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, _normalize_band
@@ -340,8 +340,12 @@ def visualize_augmentations(cfg, output_dir, num_samples=3):
 # 评估阶段 (复用 eval.py 的逻辑)
 # ---------------------------------------------------------------------------
 
-def run_eval(cfg, seed, output_dir):
-    """在 val set 上运行评估，生成所有评估输出。"""
+def run_eval(cfg, seed, output_dir, splits=None):
+    """在 val set 上运行评估，生成所有评估输出。
+
+    Args:
+        splits: Optional pre-computed splits dict (for k-fold mode).
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt_path = os.path.join(output_dir, "checkpoints", "best_model.pth")
@@ -353,11 +357,12 @@ def run_eval(cfg, seed, output_dir):
 
     # Data
     data_dir = cfg["data"]["data_dir"]
-    splits = get_data_splits(
-        data_dir=data_dir,
-        image_dir=cfg["data"]["image_dir"],
-        seed=seed,
-    )
+    if splits is None:
+        splits = get_data_splits(
+            data_dir=data_dir,
+            image_dir=cfg["data"]["image_dir"],
+            seed=seed,
+        )
 
     val_transform = get_val_transforms(cfg)
     ds_kwargs = get_dataset_kwargs(cfg)
@@ -429,9 +434,105 @@ def run_eval(cfg, seed, output_dir):
 # 主入口
 # ---------------------------------------------------------------------------
 
+def run_single(cfg, seed, output_dir, experiment_name, args, splits=None, fold_tag=""):
+    """运行单次 (config, seed[, fold]) 的完整 train→eval→viz 流程。"""
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save config copy
+    with open(os.path.join(output_dir, "config.yaml"), "w") as f:
+        yaml.dump(cfg, f, default_flow_style=False)
+
+    print("=" * 70)
+    print(f" Automated Train-Eval Workflow")
+    print(f" Experiment: {experiment_name}{fold_tag}")
+    print(f" Seed: {seed}")
+    print(f" Output: {output_dir}")
+    print("=" * 70)
+
+    # Step 1: Training
+    if not args.skip_train:
+        print("\n[Step 1/4] Training...")
+        train_result = train(cfg, seed, output_dir, splits=splits)
+        print(f"Training result: {train_result}")
+    else:
+        print("\n[Step 1/4] Training skipped (--skip_train)")
+
+    # Step 2: Metric curves
+    log_path = os.path.join(output_dir, "training_log.json")
+    if os.path.exists(log_path):
+        print("\n[Step 2/4] Generating metric curves...")
+        plot_metric_curves(log_path, output_dir, experiment_name + fold_tag)
+    else:
+        print("\n[Step 2/4] No training_log.json found, skipping curve plotting.")
+
+    # Step 3: Evaluation on val set
+    eval_results = None
+    if not args.skip_eval:
+        print("\n[Step 3/4] Evaluating on validation set...")
+        eval_results = run_eval(cfg, seed, output_dir, splits=splits)
+    else:
+        print("\n[Step 3/4] Evaluation skipped (--skip_eval)")
+
+    # Step 4: Augmentation visualization
+    if args.vis_augment:
+        print("\n[Step 4/4] Generating augmentation visualizations...")
+        visualize_augmentations(cfg, output_dir, num_samples=3)
+    else:
+        print("\n[Step 4/4] Augmentation visualization skipped (use --vis_augment to enable)")
+
+    print("\n" + "=" * 70)
+    print(f" Run complete: {experiment_name}{fold_tag}")
+    print(f" Outputs: {output_dir}")
+    print("=" * 70)
+    return eval_results
+
+
+def aggregate_kfold_results(fold_results, output_dir, experiment_name, n_splits):
+    """聚合 k-fold 结果：mean ± std 表格 + JSON。"""
+    metrics_to_aggregate = ["mIoU", "F1_macro", "Precision_macro", "Recall_macro"]
+    aggregated = {}
+    for metric in metrics_to_aggregate:
+        values = [r[metric] for r in fold_results if r is not None and metric in r]
+        if values:
+            aggregated[metric] = {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "values": [float(v) for v in values],
+            }
+    # class-1 IoU
+    iou_c1 = []
+    for r in fold_results:
+        if r is not None and "IoU_per_class" in r:
+            ipc = r["IoU_per_class"]
+            if len(ipc) > 1:
+                iou_c1.append(float(ipc[1]))
+    if iou_c1:
+        aggregated["IoU_class1"] = {
+            "mean": float(np.mean(iou_c1)),
+            "std": float(np.std(iou_c1)),
+            "values": iou_c1,
+        }
+
+    summary_path = os.path.join(output_dir, "kfold_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump({
+            "experiment": experiment_name,
+            "n_splits": n_splits,
+            "metrics": aggregated,
+        }, f, indent=2)
+
+    print("\n" + "=" * 70)
+    print(f" K-Fold Cross-Validation Summary — {experiment_name} (n_splits={n_splits})")
+    print("=" * 70)
+    for metric, stats in aggregated.items():
+        print(f"  {metric:<18}: {stats['mean']:.4f} ± {stats['std']:.4f}")
+    print(f"\n Detail saved to: {summary_path}")
+    print("=" * 70)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="自动化训练→评估→可视化工作流"
+        description="自动化训练→评估→可视化工作流（支持 k-fold 交叉验证）"
     )
     parser.add_argument("--config", type=str, required=True,
                         help="Config YAML path")
@@ -445,6 +546,9 @@ def main():
                         help="Skip training, only run eval + plotting (requires existing checkpoint)")
     parser.add_argument("--skip_eval", action="store_true",
                         help="Skip evaluation, only run training + plotting")
+    parser.add_argument("--kfold", type=int, default=0,
+                        help="K-fold cross validation (0 = disabled, default 7:3 split). "
+                             "If >0, runs k folds and aggregates results.")
     args = parser.parse_args()
 
     # Load config
@@ -453,58 +557,52 @@ def main():
 
     experiment_name = cfg["experiment_name"]
 
-    # Output directory
+    # ===== K-fold mode =====
+    if args.kfold > 0:
+        n_splits = args.kfold
+        if args.output_dir is None:
+            args.output_dir = os.path.join(
+                "outputs", f"{experiment_name}_seed{args.seed}_kfold{n_splits}"
+            )
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        # Generate fold splits
+        folds = get_kfold_splits(
+            data_dir=cfg["data"]["data_dir"],
+            image_dir=cfg["data"]["image_dir"],
+            n_splits=n_splits,
+            seed=args.seed,
+        )
+
+        print("=" * 70)
+        print(f" K-Fold Cross-Validation Mode")
+        print(f" Experiment: {experiment_name}")
+        print(f" Seed: {args.seed}")
+        print(f" Folds: {n_splits}")
+        print(f" Output: {args.output_dir}")
+        print("=" * 70)
+
+        fold_results = []
+        for k, splits in enumerate(folds):
+            fold_dir = os.path.join(args.output_dir, f"fold{k}")
+            print(f"\n>>> Fold {k+1}/{n_splits}: train={len(splits['train'])}, "
+                  f"val={len(splits['val'])}")
+            result = run_single(
+                cfg, args.seed, fold_dir, experiment_name, args,
+                splits=splits, fold_tag=f"_fold{k}",
+            )
+            fold_results.append(result)
+
+        # Aggregate
+        aggregate_kfold_results(fold_results, args.output_dir, experiment_name, n_splits)
+        return
+
+    # ===== Single-split mode (default 7:3) =====
     if args.output_dir is None:
         args.output_dir = os.path.join(
             "outputs", f"{experiment_name}_seed{args.seed}"
         )
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Save config copy
-    with open(os.path.join(args.output_dir, "config.yaml"), "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False)
-
-    print("=" * 70)
-    print(f" Automated Train-Eval Workflow")
-    print(f" Experiment: {experiment_name}")
-    print(f" Seed: {args.seed}")
-    print(f" Output: {args.output_dir}")
-    print("=" * 70)
-
-    # ---- Step 1: Training ----
-    if not args.skip_train:
-        print("\n[Step 1/4] Training...")
-        train_result = train(cfg, args.seed, args.output_dir)
-        print(f"Training result: {train_result}")
-    else:
-        print("\n[Step 1/4] Training skipped (--skip_train)")
-
-    # ---- Step 2: Metric curves ----
-    log_path = os.path.join(args.output_dir, "training_log.json")
-    if os.path.exists(log_path):
-        print("\n[Step 2/4] Generating metric curves...")
-        plot_metric_curves(log_path, args.output_dir, experiment_name)
-    else:
-        print("\n[Step 2/4] No training_log.json found, skipping curve plotting.")
-
-    # ---- Step 3: Evaluation on val set ----
-    if not args.skip_eval:
-        print("\n[Step 3/4] Evaluating on validation set...")
-        run_eval(cfg, args.seed, args.output_dir)
-    else:
-        print("\n[Step 3/4] Evaluation skipped (--skip_eval)")
-
-    # ---- Step 4: Augmentation visualization ----
-    if args.vis_augment:
-        print("\n[Step 4/4] Generating augmentation visualizations...")
-        visualize_augmentations(cfg, args.output_dir, num_samples=3)
-    else:
-        print("\n[Step 4/4] Augmentation visualization skipped (use --vis_augment to enable)")
-
-    print("\n" + "=" * 70)
-    print(" Workflow complete!")
-    print(f" All outputs saved to: {args.output_dir}")
-    print("=" * 70)
+    run_single(cfg, args.seed, args.output_dir, experiment_name, args)
 
 
 if __name__ == "__main__":
