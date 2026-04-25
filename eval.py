@@ -162,6 +162,37 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
     print(f"Saved {num_samples} visualizations to {vis_dir}")
 
 
+def save_sda_anomaly_maps(model, dataloader, device, output_dir):
+    """Save SDA anomaly heatmaps for every val sample.
+
+    Skipped silently if model does not have sda_input attribute.
+    """
+    if not hasattr(model, 'sda_input'):
+        return
+
+    heatmap_dir = os.path.join(output_dir, "sda_heatmaps")
+    os.makedirs(heatmap_dir, exist_ok=True)
+
+    model.eval()
+    count = 0
+    with torch.no_grad():
+        for images, _masks, _raw, stems in dataloader:
+            images_dev = images.to(device)
+            anomaly_maps = model.sda_input.get_anomaly_map(images_dev)
+            for j in range(anomaly_maps.shape[0]):
+                amap = anomaly_maps[j, 0]  # (H, W), range [0, 1]
+                fig, ax = plt.subplots(figsize=(5, 5))
+                ax.imshow(amap, cmap="hot", vmin=0, vmax=1)
+                ax.set_title(f"SDA anomaly — {stems[j]}")
+                ax.axis("off")
+                fig.tight_layout()
+                fig.savefig(os.path.join(heatmap_dir, f"{stems[j]}_anomaly.png"), dpi=150)
+                plt.close(fig)
+                count += 1
+
+    print(f"Saved {count} SDA anomaly heatmaps to {heatmap_dir}")
+
+
 def print_results(results, experiment_name):
     """Pretty-print evaluation results. Primary metric: Class 1 (defect) IoU."""
     iou_per_class = results["IoU_per_class"]
@@ -352,6 +383,9 @@ def main():
 
     # Band attention weights analysis (auto-skipped if model has no band_attention)
     analyze_band_weights(model, dataloader, device, args.output_dir, cfg["experiment_name"])
+
+    # SDA anomaly heatmaps (auto-skipped if model has no sda_input)
+    save_sda_anomaly_maps(model, dataloader, device, args.output_dir)
 
     # Metrics
     num_classes = cfg["data"]["num_classes"]
