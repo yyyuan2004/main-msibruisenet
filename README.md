@@ -3,7 +3,7 @@
 # MSI-Bruise-Seg：苹果多光谱图像瘀伤分割（MobileNetV2-UNet + 注意力/频谱模块消融）
 
 基于 9 波段近红外多光谱图像（MSI）的苹果瘀伤（defect）像素级语义分割项目。
-以轻量级 MobileNetV2-UNet 为骨架，对比若干"可插拔"增强模块（1D 频谱卷积 + SE、输入端 BandSE、全局显著性分支）以及 3 个外部参考架构（SMP U-Net/ResNet34、SMP FPN/EfficientNet-B0、Fang 2025 改进版 DeepLabV3+），在相同训练/评估配方下做消融对照。
+以轻量级 MobileNetV2-UNet 为骨架，对比若干"可插拔"模块（1D 频谱卷积 + SE、全局显著性分支）以及 3 个外部参考架构（SMP U-Net/ResNet34、SMP FPN/EfficientNet-B0、Fang 2025 改进版 DeepLabV3+），在相同训练/评估配方下做消融对照。
 
 ---
 
@@ -15,9 +15,9 @@
 └── masks/     # .npy 或 .png, shape (H, W), 0=背景 / 1=瘀伤
 ```
 
-- 共 185 张标注样本，9 个近红外波段（620–780 nm）
+- 共 185 张标注样本，9 个近红外波段（565–730 nm）
 - `images/` 与 `masks/` 文件名严格一一对应
-- 默认按 7:3 划分 train/val（无独立 test）
+
 
 > 换设备/换数据集时只需改各 `configs/*.yaml` 的 `data.data_dir` 字段。
 
@@ -94,7 +94,7 @@ python -m utils.spectral_analysis \
     --data_dir /root/autodl-tmp/datasets/185_9bands \
     --output_dir outputs/spectral_analysis
 
-# 3. 单 config 训练+评估+出图（7:3 划分，默认）
+# 3. 单 config 训练+评估+出图
 python train_eval.py \
     --config configs/baseline.yaml \
     --seed 42 \
@@ -191,7 +191,7 @@ train:
 
 - **class-1 IoU**（主要指标，用于 early stopping）
 - mIoU, F1(macro), Precision(macro), Recall(macro)
-- 所有指标在 3 个随机种子（42/123/456）上取 mean ± std
+- 所有指标在 3 个随机种子上取 mean ± std
 - `aggregate_results.py` 会输出统一格式的消融表到 `outputs/ablation_table.txt`
 
 ---
@@ -225,9 +225,3 @@ outputs/<config>_seed<seed>_kfold<N>/
 
 ---
 
-## 10. 注意事项
-
-- **不做颜色/亮度增强**：光谱反射率具有物理含义
-- **小样本体制**（~185 张）：模块间差异可能落在统计噪声内——本身即是有价值的发现
-- **6 GB GPU 显存不足时**：降 `batch_size=16` 或 `crop_size=320`
-- `save_interval=99999` 意为仅保存 best，不做周期 checkpoint
