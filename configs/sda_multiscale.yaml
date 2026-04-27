@@ -1,14 +1,14 @@
 # ============================================================================
-# Config: sda_input — SDA v2 at input level (concat anomaly maps with input)
+# Config: sda_multiscale — SDA v2 at input + S2 (multi-scale injection)
 # ----------------------------------------------------------------------------
-# SDA v2 computes interpretable anomaly feature maps from raw spectral input:
-#   spectral_std, SAM, SNV_L2, Mahalanobis → 4 extra input channels
-# These are concatenated with the 4 band-selected channels before the encoder,
-# giving the encoder 8 input channels total.
-# Soft gating suppresses fruit texture and background via learnable thresholds.
+# SDA v2 anomaly maps are injected at two scales:
+#   1. Input level: concatenated with raw bands → encoder sees 4+4=8 channels
+#   2. S2 level: downsampled and concatenated with S2 encoder features
+# This provides the model with spectral anomaly information at both the
+# fine-grained input level and the mid-level feature representation.
 # ============================================================================
 
-experiment_name: "sda_input"
+experiment_name: "sda_multiscale"
 
 model:
   num_classes: 2
@@ -22,7 +22,7 @@ model:
   use_sda_input: false
   sda_v2:
     enabled: true
-    position: "input"
+    position: "multiscale"
     features: ["spectral_std", "sam", "snv_l2", "mahalanobis"]
     sigma_a: 3.0
     sigma_t: 5.0

@@ -1,14 +1,12 @@
 # ============================================================================
-# Config: sda_input — SDA v2 at input level (concat anomaly maps with input)
+# Config: sda_s2 — SDA v2 at S2 level (concat anomaly maps with S2 features)
 # ----------------------------------------------------------------------------
-# SDA v2 computes interpretable anomaly feature maps from raw spectral input:
-#   spectral_std, SAM, SNV_L2, Mahalanobis → 4 extra input channels
-# These are concatenated with the 4 band-selected channels before the encoder,
-# giving the encoder 8 input channels total.
-# Soft gating suppresses fruit texture and background via learnable thresholds.
+# SDA v2 anomaly maps are computed at full resolution, then downsampled and
+# concatenated with the S2 encoder features (stride 1/4). The decoder sees
+# enriched skip connections from S2 with explicit spectral anomaly information.
 # ============================================================================
 
-experiment_name: "sda_input"
+experiment_name: "sda_s2"
 
 model:
   num_classes: 2
@@ -22,7 +20,7 @@ model:
   use_sda_input: false
   sda_v2:
     enabled: true
-    position: "input"
+    position: "s2"
     features: ["spectral_std", "sam", "snv_l2", "mahalanobis"]
     sigma_a: 3.0
     sigma_t: 5.0

@@ -15,7 +15,10 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, MobileNetV3Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, ASPP, BandAttention, InputBandSE, GlobalSaliencyBranch, SEBlock, SpectralDifferenceAttention
+from .modules import (
+    SpectralConv1D, ASPP, BandAttention, InputBandSE,
+    GlobalSaliencyBranch, SEBlock, SpectralDifferenceAttention, SDAModuleV2,
+)
 
 
 # Encoder registry: name -> class
@@ -47,12 +50,38 @@ class SegmentationModel(nn.Module):
                  use_band_attention=False,
                  band_attention_type="static", band_se_reduction=2,
                  use_global_branch=False, global_downsample=4,
-                 use_sda_input=False, sda_learnable_gate=True):
+                 use_sda_input=False, sda_learnable_gate=True,
+                 sda_v2_config=None):
         super().__init__()
 
-        # Optional SDA at input level (spectral difference attention)
+        # ---- SDA v2 (new interpretable module) ----
+        self.sda_v2_enabled = False
+        self.sda_v2_position = "none"
+        self._sda_v2_extra_enc_ch = 0
+        self._sda_v2_extra_s2_ch = 0
+        sda_extra_input = 0
+
+        if sda_v2_config is not None and sda_v2_config.get("enabled", False):
+            self.sda_v2_enabled = True
+            self.sda_v2_position = sda_v2_config.get("position", "input")
+            self.sda_v2 = SDAModuleV2(
+                feature_names=sda_v2_config.get(
+                    "features", ["spectral_std", "sam", "snv_l2", "mahalanobis"]),
+                sigma_a=sda_v2_config.get("sigma_a", 3.0),
+                sigma_t=sda_v2_config.get("sigma_t", 5.0),
+                gate_mode=sda_v2_config.get("gate_mode", "concat"),
+                use_soft_gate=sda_v2_config.get("use_soft_gate", True),
+            )
+            n_sda = self.sda_v2.out_channels
+            if self.sda_v2_position in ("input", "multiscale"):
+                sda_extra_input = n_sda
+                self._sda_v2_extra_enc_ch = n_sda
+            if self.sda_v2_position in ("s2", "multiscale"):
+                self._sda_v2_extra_s2_ch = n_sda
+
+        # ---- Legacy SDA v1 (kept for backward compat) ----
         self.use_sda_input = use_sda_input
-        if use_sda_input:
+        if use_sda_input and not self.sda_v2_enabled:
             self.sda_input = SpectralDifferenceAttention(
                 mode="input", learnable_gate=sda_learnable_gate,
             )
@@ -78,7 +107,7 @@ class SegmentationModel(nn.Module):
                 downsample_factor=global_downsample,
             )
 
-        # Build encoder
+        # Build encoder (extra channels from SDA-input concat)
         encoder_cls = ENCODERS.get(encoder_name)
         if encoder_cls is None:
             raise ValueError(
@@ -86,7 +115,7 @@ class SegmentationModel(nn.Module):
                 f"Available: {list(ENCODERS.keys())}"
             )
         self.encoder = encoder_cls(
-            in_channels=in_channels, pretrained=pretrained
+            in_channels=in_channels + sda_extra_input, pretrained=pretrained
         )
 
         enc_channels = self.encoder.get_output_channels()
@@ -120,28 +149,54 @@ class SegmentationModel(nn.Module):
         self.bottleneck_se = SEBlock(se_in, reduction=se_reduction)
 
         # Decoder — auto-adapts to encoder's channel widths
+        dec_enc_channels = list(enc_channels)
+        if self._sda_v2_extra_s2_ch > 0:
+            dec_enc_channels[1] = enc_channels[1] + self._sda_v2_extra_s2_ch
+
+        sda_decoder_ch = 0
+        if self.sda_v2_enabled and self.sda_v2_position == "decoder":
+            sda_decoder_ch = self.sda_v2.out_channels
+
         self.decoder = UNetDecoder(
-            encoder_channels=enc_channels,
+            encoder_channels=dec_enc_channels,
             num_classes=num_classes,
             skip_module=skip_module,
             se_reduction=se_reduction,
             bottleneck_channels=bottleneck_channels,
+            sda_decoder_extra_ch=sda_decoder_ch,
         )
 
     def forward(self, x, apple_mask=None):
         input_size = x.shape[2:]
 
-        # Save original input for global branch (before any input-level attention)
+        # Save raw input for SDA v2 and global branch
+        x_raw = x
         if self.use_global_branch:
             x_input = x
 
-        if self.use_sda_input:
+        # ---- SDA v2: compute anomaly features from raw input ----
+        sda_maps = None
+        if self.sda_v2_enabled:
+            sda_maps = self.sda_v2(x_raw, apple_mask=apple_mask)
+            if self.sda_v2_position in ("input", "multiscale"):
+                x = torch.cat([x, sda_maps], dim=1)
+
+        # ---- Legacy SDA v1 ----
+        if self.use_sda_input and not self.sda_v2_enabled:
             x = self.sda_input(x, apple_mask=apple_mask)
 
         if self.use_band_attention:
             x = self.band_attention(x)
 
         features = self.encoder(x)  # [S1, S2, S3, S4, S5]
+
+        # ---- SDA v2 s2 injection ----
+        if self.sda_v2_enabled and self.sda_v2_position in ("s2", "multiscale"):
+            sda_s2 = F.interpolate(
+                sda_maps, size=features[1].shape[2:],
+                mode="bilinear", align_corners=False,
+            )
+            features[1] = torch.cat([features[1], sda_s2], dim=1)
 
         if self.use_spectral_conv:
             features[0] = self.spectral_conv(features[0])
@@ -152,13 +207,17 @@ class SegmentationModel(nn.Module):
         # SE channel attention on bottleneck
         features[4] = self.bottleneck_se(features[4])
 
-        # Global saliency guidance: multiply bottleneck by spatial attention
+        # Global saliency guidance
         if self.use_global_branch:
             bottleneck_size = features[4].shape[2:]
             attn_map = self.global_branch(x_input, bottleneck_size)
             features[4] = features[4] * attn_map
 
-        logits = self.decoder(features)
+        # ---- Decoder (pass SDA maps for decoder_sda position) ----
+        if self.sda_v2_enabled and self.sda_v2_position == "decoder":
+            logits = self.decoder(features, sda_maps=sda_maps)
+        else:
+            logits = self.decoder(features)
 
         # Upsample to input resolution
         logits = F.interpolate(logits, size=input_size, mode="bilinear",
@@ -197,6 +256,8 @@ def build_model(cfg):
         )
 
     # Default: SegmentationModel
+    sda_v2_config = model_cfg.get("sda_v2", None)
+
     model = SegmentationModel(
         num_classes=model_cfg.get("num_classes", 2),
         in_channels=cfg["data"].get("num_channels", 9),
@@ -217,6 +278,7 @@ def build_model(cfg):
         global_downsample=model_cfg.get("global_downsample", 4),
         use_sda_input=model_cfg.get("use_sda_input", False),
         sda_learnable_gate=model_cfg.get("sda_learnable_gate", True),
+        sda_v2_config=sda_v2_config,
     )
 
     return model

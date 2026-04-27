@@ -39,7 +39,9 @@ def count_parameters(model):
 
 def _get_apple_mask_kwarg(model, apple_mask, device):
     """Return apple_mask kwarg dict for model forward if model uses SDA."""
-    if hasattr(model, 'use_sda_input') and model.use_sda_input:
+    if getattr(model, 'sda_v2_enabled', False):
+        return {"apple_mask": apple_mask.unsqueeze(1).to(device)}
+    if getattr(model, 'use_sda_input', False):
         return {"apple_mask": apple_mask.unsqueeze(1).to(device)}
     return {}
 
@@ -336,7 +338,7 @@ def train(cfg, seed, output_dir, splits=None):
     print(f"Checkpoints saved to: {ckpt_dir}")
 
     # Return info for ablation summary
-    return {
+    result = {
         "experiment": cfg["experiment_name"],
         "seed": seed,
         "params_M": param_count,
@@ -344,6 +346,23 @@ def train(cfg, seed, output_dir, splits=None):
         "best_epoch": best_epoch,
         "output_dir": output_dir,
     }
+
+    # Log SDA v2 config if present
+    sda_v2_cfg = cfg.get("model", {}).get("sda_v2")
+    if sda_v2_cfg and sda_v2_cfg.get("enabled"):
+        result["sda_config"] = {
+            "sda_enabled": True,
+            "sda_position": sda_v2_cfg.get("position"),
+            "sda_feature_names": sda_v2_cfg.get("features"),
+            "tau_t": float(model.sda_v2.tau_t.item()),
+            "sigma_a": sda_v2_cfg.get("sigma_a"),
+            "sigma_t": sda_v2_cfg.get("sigma_t"),
+            "gate_mode": sda_v2_cfg.get("gate_mode"),
+            "use_whole_mask": os.path.isdir(
+                os.path.join(cfg["data"]["data_dir"], "whole")),
+        }
+
+    return result
 
 
 def main():
