@@ -106,7 +106,7 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
     best_iou = 0.0
     for epoch in range(1, num_epochs + 1):
         model.train()
-        for images, masks, _raw, _stems in train_loader:
+        for images, masks, _raw, _amask, _stems in train_loader:
             images = images.to(device)
             masks = masks.to(device)
             optimizer.zero_grad()
@@ -118,7 +118,7 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
         model.eval()
         metrics.reset()
         with torch.no_grad():
-            for images, masks, _raw, _stems in val_loader:
+            for images, masks, _raw, _amask, _stems in val_loader:
                 images = images.to(device)
                 masks = masks.to(device)
                 preds = model(images).argmax(dim=1)

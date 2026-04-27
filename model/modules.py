@@ -419,30 +419,48 @@ class SpectralDifferenceAttention(nn.Module):
         if learnable_gate:
             self.gate_conv = nn.Conv2d(1, 1, kernel_size=1, bias=True)
 
-    def _anomaly_map(self, x):
-        """Compute normalized anomaly map from input tensor."""
+    def _anomaly_map(self, x, apple_mask=None):
+        """Compute normalized anomaly map from input tensor.
+
+        Args:
+            x: (B, C, H, W) input tensor.
+            apple_mask: Optional (B, 1, H, W) binary mask. If provided,
+                        normalization is performed only over apple pixels
+                        and background pixels are forced to zero.
+        """
         x_local_mean = self.avg_pool(x)
         spectral_residual = x - x_local_mean
         anomaly_map = torch.norm(spectral_residual, dim=1, keepdim=True)
-        anomaly_map = anomaly_map / (anomaly_map.amax(dim=(2, 3), keepdim=True) + 1e-6)
+
+        if apple_mask is not None:
+            masked_vals = anomaly_map[apple_mask.bool()]
+            if masked_vals.numel() > 0:
+                vmin = masked_vals.min()
+                vmax = masked_vals.max()
+                anomaly_map = (anomaly_map - vmin) / (vmax - vmin + 1e-6)
+            anomaly_map = anomaly_map * apple_mask
+        else:
+            anomaly_map = anomaly_map / (anomaly_map.amax(dim=(2, 3), keepdim=True) + 1e-6)
+
         return anomaly_map
 
-    def forward(self, x):
-        anomaly_map = self._anomaly_map(x)
+    def forward(self, x, apple_mask=None):
+        anomaly_map = self._anomaly_map(x, apple_mask=apple_mask)
         if self.learnable_gate:
             gate = torch.sigmoid(self.gate_conv(anomaly_map))
         else:
             gate = anomaly_map
         return x * (1 + gate)
 
-    def get_anomaly_map(self, x):
+    def get_anomaly_map(self, x, apple_mask=None):
         """Return anomaly map as numpy array for visualization.
 
         Args:
             x: (B, C, H, W) input tensor.
+            apple_mask: Optional (B, 1, H, W) binary mask.
 
         Returns:
             (B, 1, H, W) numpy array in [0, 1].
         """
         with torch.no_grad():
-            return self._anomaly_map(x).cpu().numpy()
+            return self._anomaly_map(x, apple_mask=apple_mask).cpu().numpy()

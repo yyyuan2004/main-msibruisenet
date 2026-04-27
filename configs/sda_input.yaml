@@ -38,6 +38,7 @@ data:
   use_sharpen: false
   sharpen_sigma: 1.0
   sharpen_alpha: 1.5
+  apple_mask_threshold: 0.05
 
 train:
   batch_size: 32

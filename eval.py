@@ -19,6 +19,13 @@ from model.model import build_model
 from utils.metrics import SegmentationMetrics
 
 
+def _eval_apple_mask_kwarg(model, apple_masks, device):
+    """Return apple_mask kwarg dict for model forward if model uses SDA."""
+    if hasattr(model, 'use_sda_input') and model.use_sda_input:
+        return {"apple_mask": apple_masks.unsqueeze(1).to(device)}
+    return {}
+
+
 @torch.no_grad()
 def evaluate(model, dataloader, metrics, device, num_classes):
     """Run evaluation and collect predictions."""
@@ -31,11 +38,12 @@ def evaluate(model, dataloader, metrics, device, num_classes):
     all_images_raw = []
     all_stems = []
 
-    for images, masks, images_raw, stems in dataloader:
+    for images, masks, images_raw, apple_masks, stems in dataloader:
         images_dev = images.to(device)
         masks_dev = masks.to(device)
+        sda_kw = _eval_apple_mask_kwarg(model, apple_masks, device)
 
-        logits = model(images_dev)
+        logits = model(images_dev, **sda_kw)
         preds = logits.argmax(dim=1)
 
         metrics.update(preds, masks_dev)
@@ -176,9 +184,12 @@ def save_sda_anomaly_maps(model, dataloader, device, output_dir):
     model.eval()
     count = 0
     with torch.no_grad():
-        for images, _masks, _raw, stems in dataloader:
+        for images, _masks, _raw, apple_masks, stems in dataloader:
             images_dev = images.to(device)
-            anomaly_maps = model.sda_input.get_anomaly_map(images_dev)
+            am_kw = {}
+            if hasattr(model, 'use_sda_input') and model.use_sda_input:
+                am_kw["apple_mask"] = apple_masks.unsqueeze(1).to(device)
+            anomaly_maps = model.sda_input.get_anomaly_map(images_dev, **am_kw)
             for j in range(anomaly_maps.shape[0]):
                 amap = anomaly_maps[j, 0]  # (H, W), range [0, 1]
                 fig, ax = plt.subplots(figsize=(5, 5))
@@ -239,7 +250,7 @@ def analyze_band_weights(model, dataloader, device, output_dir, experiment_name)
         # InputBandSE: collect per-image weights
         all_weights = []
         with torch.no_grad():
-            for images, _, _, _ in dataloader:
+            for images, _, _, _, _ in dataloader:
                 images_dev = images.to(device)
                 w = model.band_attention.get_weights(images_dev)  # (B, C)
                 all_weights.append(w)

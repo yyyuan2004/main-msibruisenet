@@ -128,7 +128,7 @@ class SegmentationModel(nn.Module):
             bottleneck_channels=bottleneck_channels,
         )
 
-    def forward(self, x):
+    def forward(self, x, apple_mask=None):
         input_size = x.shape[2:]
 
         # Save original input for global branch (before any input-level attention)
@@ -136,7 +136,7 @@ class SegmentationModel(nn.Module):
             x_input = x
 
         if self.use_sda_input:
-            x = self.sda_input(x)
+            x = self.sda_input(x, apple_mask=apple_mask)
 
         if self.use_band_attention:
             x = self.band_attention(x)

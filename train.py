@@ -37,18 +37,26 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 
 
+def _get_apple_mask_kwarg(model, apple_mask, device):
+    """Return apple_mask kwarg dict for model forward if model uses SDA."""
+    if hasattr(model, 'use_sda_input') and model.use_sda_input:
+        return {"apple_mask": apple_mask.unsqueeze(1).to(device)}
+    return {}
+
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     num_batches = 0
 
-    for images, masks, _raw, _stems in dataloader:
+    for images, masks, _raw, apple_masks, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
+        sda_kw = _get_apple_mask_kwarg(model, apple_masks, device)
 
         optimizer.zero_grad()
-        logits = model(images)
+        logits = model(images, **sda_kw)
         loss = criterion(logits, masks)
         loss.backward()
         optimizer.step()
@@ -67,11 +75,12 @@ def validate(model, dataloader, criterion, metrics, device):
     num_batches = 0
     metrics.reset()
 
-    for images, masks, _raw, _stems in dataloader:
+    for images, masks, _raw, apple_masks, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
+        sda_kw = _get_apple_mask_kwarg(model, apple_masks, device)
 
-        logits = model(images)
+        logits = model(images, **sda_kw)
         loss = criterion(logits, masks)
 
         preds = logits.argmax(dim=1)
