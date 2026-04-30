@@ -166,6 +166,7 @@ def train(cfg, seed, output_dir, splits=None):
     model = build_model(cfg).to(device)
     param_count = count_parameters(model)
     print(f"Model: {cfg['experiment_name']} | Parameters: {param_count:.2f}M")
+    print(f"Apple mask source: {train_dataset.apple_mask_source}")
 
     # Loss
     criterion = SegmentationLoss(
@@ -355,11 +356,12 @@ def train(cfg, seed, output_dir, splits=None):
             "sda_position": sda_v2_cfg.get("position"),
             "sda_feature_names": sda_v2_cfg.get("features"),
             "tau_t": float(model.sda_v2.tau_t.item()),
+            "tau_a": float(model.sda_v2.tau_a.item()),
             "sigma_a": sda_v2_cfg.get("sigma_a"),
             "sigma_t": sda_v2_cfg.get("sigma_t"),
             "gate_mode": sda_v2_cfg.get("gate_mode"),
-            "use_whole_mask": os.path.isdir(
-                os.path.join(cfg["data"]["data_dir"], "whole")),
+            "use_whole_mask": train_dataset._whole_dir_exists,
+            "apple_mask_source": train_dataset.apple_mask_source,
         }
 
     return result

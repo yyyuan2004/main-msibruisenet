@@ -100,11 +100,19 @@ class MSIDataset(Dataset):
             self.pca_components = data["components"]  # (n_components, 9)
             self.pca_mean = data["mean"]              # (9,)
 
-        # Apple mask threshold (fallback when whole mask file is missing)
+        # Apple mask: detect availability of whole/ directory at init time
         self.apple_mask_threshold = apple_mask_threshold
+        self._whole_dir_exists = os.path.isdir(self.whole_root)
 
     def __len__(self):
         return len(self.file_list)
+
+    @property
+    def apple_mask_source(self):
+        """Return string describing the apple mask source for logging."""
+        if self._whole_dir_exists:
+            return "whole_mask_npy"
+        return f"threshold_fallback(thr={self.apple_mask_threshold})"
 
     def _load_mask(self, stem):
         """Load mask file, supporting both .npy and .png formats."""
@@ -124,6 +132,12 @@ class MSIDataset(Dataset):
     def _load_apple_mask(self, stem, image):
         """Load whole-apple mask from data_dir/whole/, or auto-estimate.
 
+        Source priority:
+            1. whole/ directory: load <stem>.npy, binarize (>0 → 1.0)
+            2. Threshold fallback: mean_reflectance > apple_mask_threshold
+
+        Use ``self.apple_mask_source`` to check which source is active.
+
         Args:
             stem: File name stem.
             image: (C, H, W) raw spectral image (before band selection).
@@ -131,10 +145,12 @@ class MSIDataset(Dataset):
         Returns:
             apple_mask: (H, W) float32, 1.0=apple / 0.0=background.
         """
-        whole_path = os.path.join(self.whole_root, stem + ".npy")
-        if os.path.exists(whole_path):
-            m = np.load(whole_path).astype(np.float32)
-            return (m > 0).astype(np.float32)
+        if self._whole_dir_exists:
+            whole_path = os.path.join(self.whole_root, stem + ".npy")
+            if os.path.exists(whole_path):
+                m = np.load(whole_path).astype(np.float32)
+                return (m > 0).astype(np.float32)
+        # Fallback: auto-estimate from mean reflectance
         return (image.mean(axis=0) > self.apple_mask_threshold).astype(np.float32)
 
     def __getitem__(self, idx):
