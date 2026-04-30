@@ -1,57 +1,74 @@
 """Spatial augmentations for MSI segmentation.
 
 All transforms operate on numpy arrays and apply identical spatial
-transformations to both the image (C, H, W) and the mask (H, W).
-No color/brightness augmentation is applied — spectral reflectance
-values have physical meaning and must not be altered.
+transformations to the spectral image (C, H, W), defect mask (H, W), and
+optionally the apple foreground mask (H, W). No color/brightness augmentation is
+applied to masks; spectral intensity augmentations only modify the image.
 """
 
 import numpy as np
 import cv2
 
 
+def _pack_return(image, mask, apple_mask):
+    """Return a 2-tuple or 3-tuple depending on whether apple_mask is used."""
+    if apple_mask is None:
+        return image, mask
+    return image, mask, apple_mask
+
+
 class Compose:
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
+        if apple_mask is None:
+            for t in self.transforms:
+                image, mask = t(image, mask)
+            return image, mask
+
         for t in self.transforms:
-            image, mask = t(image, mask)
-        return image, mask
+            image, mask, apple_mask = t(image, mask, apple_mask)
+        return image, mask, apple_mask
 
 
 class RandomHorizontalFlip:
     def __init__(self, p=0.5):
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() < self.p:
             image = image[:, :, ::-1].copy()
             mask = mask[:, ::-1].copy()
-        return image, mask
+            if apple_mask is not None:
+                apple_mask = apple_mask[:, ::-1].copy()
+        return _pack_return(image, mask, apple_mask)
 
 
 class RandomVerticalFlip:
     def __init__(self, p=0.5):
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() < self.p:
             image = image[:, ::-1, :].copy()
             mask = mask[::-1, :].copy()
-        return image, mask
+            if apple_mask is not None:
+                apple_mask = apple_mask[::-1, :].copy()
+        return _pack_return(image, mask, apple_mask)
 
 
 class RandomRotation90:
     """Randomly rotate by 0, 90, 180, or 270 degrees."""
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         k = np.random.randint(0, 4)
         if k > 0:
-            # image: (C, H, W), rotate last two dims
             image = np.rot90(image, k, axes=(1, 2)).copy()
             mask = np.rot90(mask, k, axes=(0, 1)).copy()
-        return image, mask
+            if apple_mask is not None:
+                apple_mask = np.rot90(apple_mask, k, axes=(0, 1)).copy()
+        return _pack_return(image, mask, apple_mask)
 
 
 class RandomCrop:
@@ -63,16 +80,18 @@ class RandomCrop:
         else:
             self.crop_h, self.crop_w = crop_size
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         _, h, w = image.shape
         if h <= self.crop_h and w <= self.crop_w:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
-        top = np.random.randint(0, max(h - self.crop_h, 1))
-        left = np.random.randint(0, max(w - self.crop_w, 1))
+        top = np.random.randint(0, max(h - self.crop_h + 1, 1))
+        left = np.random.randint(0, max(w - self.crop_w + 1, 1))
         image = image[:, top:top + self.crop_h, left:left + self.crop_w].copy()
         mask = mask[top:top + self.crop_h, left:left + self.crop_w].copy()
-        return image, mask
+        if apple_mask is not None:
+            apple_mask = apple_mask[top:top + self.crop_h, left:left + self.crop_w].copy()
+        return _pack_return(image, mask, apple_mask)
 
 
 class ElasticTransform:
@@ -83,9 +102,9 @@ class ElasticTransform:
         self.sigma = sigma
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() >= self.p:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
         _, h, w = image.shape
         dx = cv2.GaussianBlur(
@@ -101,7 +120,6 @@ class ElasticTransform:
         map_x = (x + dx).astype(np.float32)
         map_y = (y + dy).astype(np.float32)
 
-        # Apply to each channel of image
         warped_image = np.stack([
             cv2.remap(image[c], map_x, map_y,
                       interpolation=cv2.INTER_LINEAR,
@@ -109,28 +127,24 @@ class ElasticTransform:
             for c in range(image.shape[0])
         ], axis=0)
 
-        # Apply to mask with nearest interpolation
         warped_mask = cv2.remap(
             mask.astype(np.float32), map_x, map_y,
             interpolation=cv2.INTER_NEAREST,
             borderMode=cv2.BORDER_REFLECT_101
         ).astype(mask.dtype)
 
-        return warped_image, warped_mask
+        if apple_mask is not None:
+            apple_mask = cv2.remap(
+                apple_mask.astype(np.float32), map_x, map_y,
+                interpolation=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_REFLECT_101
+            ).astype(apple_mask.dtype)
+
+        return _pack_return(warped_image, warped_mask, apple_mask)
 
 
 class Cutout:
-    """Random rectangular erasing (Cutout) for strong augmentation.
-
-    Randomly erases a rectangular region of the image, filling it with zeros.
-    The mask is NOT modified (label information is preserved).
-
-    Args:
-        num_holes: Number of rectangular patches to erase.
-        max_h_size: Maximum height of erased patch (fraction of image H).
-        max_w_size: Maximum width of erased patch (fraction of image W).
-        p: Probability of applying cutout.
-    """
+    """Random rectangular erasing for the spectral image only."""
 
     def __init__(self, num_holes=1, max_h_frac=0.3, max_w_frac=0.3, p=0.5):
         self.num_holes = num_holes
@@ -138,9 +152,9 @@ class Cutout:
         self.max_w_frac = max_w_frac
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() >= self.p:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
         image = image.copy()
         _, h, w = image.shape
@@ -159,28 +173,21 @@ class Cutout:
 
             image[:, y1:y2, x1:x2] = 0.0
 
-        return image, mask
+        return _pack_return(image, mask, apple_mask)
 
 
 class GaussianBlur:
-    """Apply Gaussian blur to the spectral image (strong augmentation).
-
-    Args:
-        kernel_range: Range of kernel sizes (must be odd numbers).
-        sigma_range: Range of sigma values.
-        p: Probability of applying blur.
-    """
+    """Apply Gaussian blur to the spectral image only."""
 
     def __init__(self, kernel_range=(3, 7), sigma_range=(0.5, 2.0), p=0.5):
         self.kernel_range = kernel_range
         self.sigma_range = sigma_range
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() >= self.p:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
-        # Pick random odd kernel size
         k = np.random.choice(range(self.kernel_range[0], self.kernel_range[1] + 1, 2))
         sigma = np.random.uniform(*self.sigma_range)
 
@@ -189,53 +196,44 @@ class GaussianBlur:
             for c in range(image.shape[0])
         ], axis=0)
 
-        return blurred, mask
+        return _pack_return(blurred, mask, apple_mask)
 
 
 class IntensityJitter:
-    """Random per-channel intensity scaling (strong augmentation for MSI).
-
-    Unlike RGB brightness/contrast jitter, this applies independent per-band
-    scaling to simulate spectral response variations while keeping physical
-    meaning roughly intact.
-
-    Args:
-        scale_range: (min_scale, max_scale) for per-channel multiplicative jitter.
-        p: Probability of applying.
-    """
+    """Random per-channel intensity scaling for the spectral image only."""
 
     def __init__(self, scale_range=(0.8, 1.2), p=0.5):
         self.scale_range = scale_range
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() >= self.p:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
         c = image.shape[0]
         scales = np.random.uniform(
             self.scale_range[0], self.scale_range[1], size=(c, 1, 1)
         ).astype(np.float32)
         image = image * scales
-        return image, mask
+        return _pack_return(image, mask, apple_mask)
 
 
 class GaussianNoise:
-    """Add small Gaussian noise to the spectral image."""
+    """Add small Gaussian noise to the spectral image only."""
 
     def __init__(self, std=0.01, p=0.5):
         self.std = std
         self.p = p
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         if np.random.random() < self.p:
             noise = np.random.randn(*image.shape).astype(np.float32) * self.std
             image = image + noise
-        return image, mask
+        return _pack_return(image, mask, apple_mask)
 
 
 class Resize:
-    """Resize image and mask to target size."""
+    """Resize image, defect mask, and optionally apple foreground mask."""
 
     def __init__(self, size):
         if isinstance(size, int):
@@ -243,12 +241,11 @@ class Resize:
         else:
             self.h, self.w = size
 
-    def __call__(self, image, mask):
+    def __call__(self, image, mask, apple_mask=None):
         _, h, w = image.shape
         if h == self.h and w == self.w:
-            return image, mask
+            return _pack_return(image, mask, apple_mask)
 
-        # image: (C, H, W) -> resize each channel
         resized_image = np.stack([
             cv2.resize(image[c], (self.w, self.h),
                        interpolation=cv2.INTER_LINEAR)
@@ -260,7 +257,36 @@ class Resize:
             interpolation=cv2.INTER_NEAREST
         ).astype(mask.dtype)
 
-        return resized_image, resized_mask
+        if apple_mask is not None:
+            apple_mask = cv2.resize(
+                apple_mask.astype(np.float32), (self.w, self.h),
+                interpolation=cv2.INTER_NEAREST
+            ).astype(apple_mask.dtype)
+
+        return _pack_return(resized_image, resized_mask, apple_mask)
+
+
+class CenterCrop:
+    """Center crop to target size."""
+
+    def __init__(self, crop_size):
+        if isinstance(crop_size, int):
+            self.crop_h, self.crop_w = crop_size, crop_size
+        else:
+            self.crop_h, self.crop_w = crop_size
+
+    def __call__(self, image, mask, apple_mask=None):
+        _, h, w = image.shape
+        if h <= self.crop_h and w <= self.crop_w:
+            return _pack_return(image, mask, apple_mask)
+
+        top = (h - self.crop_h) // 2
+        left = (w - self.crop_w) // 2
+        image = image[:, top:top + self.crop_h, left:left + self.crop_w].copy()
+        mask = mask[top:top + self.crop_h, left:left + self.crop_w].copy()
+        if apple_mask is not None:
+            apple_mask = apple_mask[top:top + self.crop_h, left:left + self.crop_w].copy()
+        return _pack_return(image, mask, apple_mask)
 
 
 def get_train_transforms(cfg):
@@ -293,32 +319,9 @@ def get_train_transforms(cfg):
 
 
 def get_val_transforms(cfg):
-    """Build validation/test transform pipeline (no augmentation)."""
+    """Build validation/test transform pipeline without random augmentation."""
     crop_size = cfg["data"].get("crop_size", cfg["data"]["image_size"])
     transforms = []
-    # For val/test, center-crop if crop_size < image_size
-    # Otherwise just pass through
     if crop_size < cfg["data"]["image_size"]:
         transforms.append(CenterCrop(crop_size))
     return Compose(transforms)
-
-
-class CenterCrop:
-    """Center crop to target size."""
-
-    def __init__(self, crop_size):
-        if isinstance(crop_size, int):
-            self.crop_h, self.crop_w = crop_size, crop_size
-        else:
-            self.crop_h, self.crop_w = crop_size
-
-    def __call__(self, image, mask):
-        _, h, w = image.shape
-        if h <= self.crop_h and w <= self.crop_w:
-            return image, mask
-
-        top = (h - self.crop_h) // 2
-        left = (w - self.crop_w) // 2
-        image = image[:, top:top + self.crop_h, left:left + self.crop_w].copy()
-        mask = mask[top:top + self.crop_h, left:left + self.crop_w].copy()
-        return image, mask
