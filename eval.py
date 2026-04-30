@@ -19,6 +19,15 @@ from model.model import build_model
 from utils.metrics import SegmentationMetrics
 
 
+def _eval_apple_mask_kwarg(model, apple_masks, device):
+    """Return apple_mask kwarg dict for model forward if model uses SDA."""
+    if getattr(model, 'sda_v2_enabled', False):
+        return {"apple_mask": apple_masks.unsqueeze(1).to(device)}
+    if getattr(model, 'use_sda_input', False):
+        return {"apple_mask": apple_masks.unsqueeze(1).to(device)}
+    return {}
+
+
 @torch.no_grad()
 def evaluate(model, dataloader, metrics, device, num_classes):
     """Run evaluation and collect predictions."""
@@ -31,11 +40,12 @@ def evaluate(model, dataloader, metrics, device, num_classes):
     all_images_raw = []
     all_stems = []
 
-    for images, masks, images_raw, stems in dataloader:
+    for images, masks, images_raw, apple_masks, stems in dataloader:
         images_dev = images.to(device)
         masks_dev = masks.to(device)
+        sda_kw = _eval_apple_mask_kwarg(model, apple_masks, device)
 
-        logits = model(images_dev)
+        logits = model(images_dev, **sda_kw)
         preds = logits.argmax(dim=1)
 
         metrics.update(preds, masks_dev)
@@ -165,9 +175,12 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
 def save_sda_anomaly_maps(model, dataloader, device, output_dir):
     """Save SDA anomaly heatmaps for every val sample.
 
-    Skipped silently if model does not have sda_input attribute.
+    Supports both legacy SDA v1 (single anomaly map) and SDA v2
+    (multiple named feature maps). Skipped silently if model has neither.
     """
-    if not hasattr(model, 'sda_input'):
+    has_v1 = hasattr(model, 'sda_input')
+    has_v2 = getattr(model, 'sda_v2_enabled', False)
+    if not has_v1 and not has_v2:
         return
 
     heatmap_dir = os.path.join(output_dir, "sda_heatmaps")
@@ -176,19 +189,47 @@ def save_sda_anomaly_maps(model, dataloader, device, output_dir):
     model.eval()
     count = 0
     with torch.no_grad():
-        for images, _masks, _raw, stems in dataloader:
+        for images, _masks, _raw, apple_masks, stems in dataloader:
             images_dev = images.to(device)
-            anomaly_maps = model.sda_input.get_anomaly_map(images_dev)
-            for j in range(anomaly_maps.shape[0]):
-                amap = anomaly_maps[j, 0]  # (H, W), range [0, 1]
-                fig, ax = plt.subplots(figsize=(5, 5))
-                ax.imshow(amap, cmap="hot", vmin=0, vmax=1)
-                ax.set_title(f"SDA anomaly — {stems[j]}")
-                ax.axis("off")
-                fig.tight_layout()
-                fig.savefig(os.path.join(heatmap_dir, f"{stems[j]}_anomaly.png"), dpi=150)
-                plt.close(fig)
-                count += 1
+            apple_mask_dev = apple_masks.unsqueeze(1).to(device)
+
+            if has_v2:
+                feature_maps = model.sda_v2.get_feature_maps(
+                    images_dev, apple_mask=apple_mask_dev)
+                feature_names = model.sda_v2.feature_names
+                for j in range(feature_maps.shape[0]):
+                    n_feat = len(feature_names)
+                    fig, axes = plt.subplots(1, n_feat, figsize=(4 * n_feat, 4))
+                    if n_feat == 1:
+                        axes = [axes]
+                    for fi, fname in enumerate(feature_names):
+                        amap = feature_maps[j, fi]
+                        axes[fi].imshow(amap, cmap="hot", vmin=0, vmax=1)
+                        axes[fi].set_title(fname, fontsize=9)
+                        axes[fi].axis("off")
+                    fig.suptitle(f"SDA v2 — {stems[j]}", fontsize=11)
+                    fig.tight_layout()
+                    fig.savefig(os.path.join(
+                        heatmap_dir, f"{stems[j]}_sda_v2.png"), dpi=150)
+                    plt.close(fig)
+                    count += 1
+            elif has_v1:
+                am_kw = {}
+                if getattr(model, 'use_sda_input', False):
+                    am_kw["apple_mask"] = apple_mask_dev
+                anomaly_maps = model.sda_input.get_anomaly_map(
+                    images_dev, **am_kw)
+                for j in range(anomaly_maps.shape[0]):
+                    amap = anomaly_maps[j, 0]
+                    fig, ax = plt.subplots(figsize=(5, 5))
+                    ax.imshow(amap, cmap="hot", vmin=0, vmax=1)
+                    ax.set_title(f"SDA anomaly — {stems[j]}")
+                    ax.axis("off")
+                    fig.tight_layout()
+                    fig.savefig(os.path.join(
+                        heatmap_dir, f"{stems[j]}_anomaly.png"), dpi=150)
+                    plt.close(fig)
+                    count += 1
 
     print(f"Saved {count} SDA anomaly heatmaps to {heatmap_dir}")
 
@@ -239,7 +280,7 @@ def analyze_band_weights(model, dataloader, device, output_dir, experiment_name)
         # InputBandSE: collect per-image weights
         all_weights = []
         with torch.no_grad():
-            for images, _, _, _ in dataloader:
+            for images, _, _, _, _ in dataloader:
                 images_dev = images.to(device)
                 w = model.band_attention.get_weights(images_dev)  # (B, C)
                 all_weights.append(w)

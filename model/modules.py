@@ -8,11 +8,17 @@ Modules:
     - InputBandSE: Per-image dynamic band weighting via GAP+FC.
     - BandAttention: Static per-band learnable weighting.
     - GlobalSaliencyBranch: Low-resolution spatial attention for bottleneck.
+    - SDAModuleV2: Interpretable spectral anomaly feature maps with soft gating.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from utils.sda_features import (
+    compute_sda_features, compute_texture_energy,
+    gaussian_blur_2d, normalize_within_mask,
+)
 
 
 class SEBlock(nn.Module):
@@ -419,30 +425,164 @@ class SpectralDifferenceAttention(nn.Module):
         if learnable_gate:
             self.gate_conv = nn.Conv2d(1, 1, kernel_size=1, bias=True)
 
-    def _anomaly_map(self, x):
-        """Compute normalized anomaly map from input tensor."""
+    def _anomaly_map(self, x, apple_mask=None):
+        """Compute normalized anomaly map from input tensor.
+
+        Args:
+            x: (B, C, H, W) input tensor.
+            apple_mask: Optional (B, 1, H, W) binary mask. If provided,
+                        normalization is performed only over apple pixels
+                        and background pixels are forced to zero.
+        """
         x_local_mean = self.avg_pool(x)
         spectral_residual = x - x_local_mean
         anomaly_map = torch.norm(spectral_residual, dim=1, keepdim=True)
-        anomaly_map = anomaly_map / (anomaly_map.amax(dim=(2, 3), keepdim=True) + 1e-6)
+
+        if apple_mask is not None:
+            masked_vals = anomaly_map[apple_mask.bool()]
+            if masked_vals.numel() > 0:
+                vmin = masked_vals.min()
+                vmax = masked_vals.max()
+                anomaly_map = (anomaly_map - vmin) / (vmax - vmin + 1e-6)
+            anomaly_map = anomaly_map * apple_mask
+        else:
+            anomaly_map = anomaly_map / (anomaly_map.amax(dim=(2, 3), keepdim=True) + 1e-6)
+
         return anomaly_map
 
-    def forward(self, x):
-        anomaly_map = self._anomaly_map(x)
+    def forward(self, x, apple_mask=None):
+        anomaly_map = self._anomaly_map(x, apple_mask=apple_mask)
         if self.learnable_gate:
             gate = torch.sigmoid(self.gate_conv(anomaly_map))
         else:
             gate = anomaly_map
         return x * (1 + gate)
 
-    def get_anomaly_map(self, x):
+    def get_anomaly_map(self, x, apple_mask=None):
         """Return anomaly map as numpy array for visualization.
 
         Args:
             x: (B, C, H, W) input tensor.
+            apple_mask: Optional (B, 1, H, W) binary mask.
 
         Returns:
             (B, 1, H, W) numpy array in [0, 1].
         """
         with torch.no_grad():
-            return self._anomaly_map(x).cpu().numpy()
+            return self._anomaly_map(x, apple_mask=apple_mask).cpu().numpy()
+
+
+class SDAModuleV2(nn.Module):
+    """Spectral Difference Attention v2: interpretable anomaly feature maps.
+
+    Computes multiple complementary anomaly maps from raw spectral input
+    (raw + SNV structure) instead of a single mean-reflectance residual.
+
+    Supported features:
+        - spectral_std:  Per-pixel band-wise std
+        - sam:           Spectral Angle to healthy reference
+        - snv_l2:        SNV L2 distance to healthy reference
+        - mahalanobis:   Mahalanobis distance to apple foreground distribution
+        - raw_l2:        Raw L2 distance to healthy reference
+
+    Soft gating mechanism:
+        A_low = GaussianBlur(anomaly, sigma_a)
+        T     = texture energy (squared Laplacian, smoothed with sigma_t)
+        G     = apple_mask * sigmoid((A_low - tau_a) / s_a)
+                          * sigmoid((tau_t - T) / s_t)
+
+    Gate modes:
+        - "concat":   Return (B, N_features, H, W) to concat with backbone.
+        - "multiply": Reduce to (B, 1, H, W) gate and multiply backbone.
+        - "none":     Return raw normalized features, no gating.
+
+    Args:
+        feature_names: List of feature names.
+        sigma_a: Gaussian blur sigma for anomaly smoothing.
+        sigma_t: Gaussian blur sigma for texture map.
+        gate_mode: "concat" | "multiply" | "none".
+        use_soft_gate: Whether to apply texture-suppressing soft gate.
+    """
+
+    def __init__(self, feature_names=None, sigma_a=3.0, sigma_t=5.0,
+                 gate_mode="concat", use_soft_gate=True):
+        super().__init__()
+        if feature_names is None:
+            feature_names = ["spectral_std", "sam", "snv_l2", "mahalanobis"]
+        self.feature_names = list(feature_names)
+        self.num_features = len(self.feature_names)
+        self.sigma_a = sigma_a
+        self.sigma_t = sigma_t
+        self.gate_mode = gate_mode
+        self.use_soft_gate = use_soft_gate
+
+        self.tau_a = nn.Parameter(torch.tensor(0.5))
+        self.tau_t = nn.Parameter(torch.tensor(0.3))
+        self.s_a = nn.Parameter(torch.tensor(0.15))
+        self.s_t = nn.Parameter(torch.tensor(0.15))
+
+        self.feature_scale = nn.Parameter(torch.ones(self.num_features))
+
+        if gate_mode == "multiply":
+            self.attn_head = nn.Sequential(
+                nn.Conv2d(self.num_features, 1, 1, bias=True),
+                nn.Sigmoid(),
+            )
+
+    @property
+    def out_channels(self):
+        if self.gate_mode == "multiply":
+            return 1
+        return self.num_features
+
+    def _apply_soft_gate(self, features, x_raw, apple_mask):
+        """Texture-suppressing soft gate applied per-feature."""
+        A_low = gaussian_blur_2d(features, self.sigma_a)
+        T = compute_texture_energy(x_raw, self.sigma_t)
+        T = normalize_within_mask(T, apple_mask)
+        T = T.expand_as(features)
+
+        gate = (torch.sigmoid((A_low - self.tau_a) / self.s_a.abs().clamp(min=0.01))
+                * torch.sigmoid((self.tau_t - T) / self.s_t.abs().clamp(min=0.01)))
+        if apple_mask is not None:
+            gate = gate * apple_mask
+        return features * gate
+
+    def forward(self, x_raw, apple_mask=None):
+        """Compute SDA v2 anomaly feature maps.
+
+        Args:
+            x_raw: (B, C, H, W) raw spectral input (band-selected).
+            apple_mask: (B, 1, H, W) binary apple mask, or None.
+        Returns:
+            If gate_mode=="concat" or "none": (B, N_features, H, W)
+            If gate_mode=="multiply":          (B, 1, H, W)
+        """
+        if apple_mask is None:
+            apple_mask = torch.ones(
+                x_raw.shape[0], 1, x_raw.shape[2], x_raw.shape[3],
+                device=x_raw.device, dtype=x_raw.dtype,
+            )
+
+        features = compute_sda_features(x_raw, apple_mask, self.feature_names)
+
+        if self.use_soft_gate:
+            features = self._apply_soft_gate(features, x_raw, apple_mask)
+
+        scale = self.feature_scale.view(1, -1, 1, 1)
+        features = features * scale.abs()
+
+        if self.gate_mode == "multiply":
+            return self.attn_head(features)
+        return features
+
+    def get_feature_maps(self, x_raw, apple_mask=None):
+        """Return per-feature anomaly maps as numpy for visualization."""
+        with torch.no_grad():
+            if apple_mask is None:
+                apple_mask = torch.ones(
+                    x_raw.shape[0], 1, x_raw.shape[2], x_raw.shape[3],
+                    device=x_raw.device, dtype=x_raw.dtype,
+                )
+            maps = compute_sda_features(x_raw, apple_mask, self.feature_names)
+            return maps.cpu().numpy()

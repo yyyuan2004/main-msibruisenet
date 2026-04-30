@@ -95,11 +95,12 @@ class UNetDecoder(nn.Module):
         skip_module: Module type for skip connections ("none", "se", "cbam").
         se_reduction: SE/CBAM reduction ratio.
         bottleneck_channels: If ASPP is used upstream, this overrides encoder_channels[4].
+        sda_decoder_extra_ch: Extra channels from SDA maps injected at decoder levels 2-3.
     """
 
     def __init__(self, encoder_channels=None, decoder_channels=None,
                  num_classes=2, skip_module="none", se_reduction=16,
-                 bottleneck_channels=None, **kwargs):
+                 bottleneck_channels=None, sda_decoder_extra_ch=0, **kwargs):
 
         super().__init__()
 
@@ -108,10 +109,15 @@ class UNetDecoder(nn.Module):
         if decoder_channels is None:
             decoder_channels = [128, 64, 32, 16]
 
+        self.sda_decoder_extra_ch = sda_decoder_extra_ch
         bottleneck = bottleneck_channels if bottleneck_channels else encoder_channels[4]
 
         in_ch = [bottleneck, decoder_channels[0], decoder_channels[1], decoder_channels[2]]
         skip_ch = [encoder_channels[3], encoder_channels[2], encoder_channels[1], encoder_channels[0]]
+
+        if sda_decoder_extra_ch > 0:
+            skip_ch[2] = skip_ch[2] + sda_decoder_extra_ch
+            skip_ch[3] = skip_ch[3] + sda_decoder_extra_ch
 
         self.blocks = nn.ModuleList()
         for i in range(4):
@@ -125,11 +131,12 @@ class UNetDecoder(nn.Module):
 
         self.seg_head = nn.Conv2d(decoder_channels[-1], num_classes, kernel_size=1)
 
-    def forward(self, features):
+    def forward(self, features, sda_maps=None):
         """
         Args:
             features: List [S1, S2, S3, S4, S5] from encoder.
-
+            sda_maps: Optional (B, N_sda, H, W) anomaly maps at full resolution.
+                      Concatenated with S2 and S1 skips when sda_decoder_extra_ch > 0.
         Returns:
             Logits of shape (B, num_classes, H/2, W/2).
         """
@@ -137,7 +144,19 @@ class UNetDecoder(nn.Module):
 
         x = self.blocks[0](s5, s4)
         x = self.blocks[1](x, s3)
+
+        if sda_maps is not None and self.sda_decoder_extra_ch > 0:
+            sda_s2 = F.interpolate(sda_maps, size=s2.shape[2:],
+                                   mode="bilinear", align_corners=False)
+            s2 = torch.cat([s2, sda_s2], dim=1)
+
         x = self.blocks[2](x, s2)
+
+        if sda_maps is not None and self.sda_decoder_extra_ch > 0:
+            sda_s1 = F.interpolate(sda_maps, size=s1.shape[2:],
+                                   mode="bilinear", align_corners=False)
+            s1 = torch.cat([s1, sda_s1], dim=1)
+
         x = self.blocks[3](x, s1)
 
         return self.seg_head(x)

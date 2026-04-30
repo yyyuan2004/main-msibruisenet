@@ -56,10 +56,11 @@ def unsharp_mask(image, sigma=1.0, alpha=1.5):
 class MSIDataset(Dataset):
     """Dataset for loading 9-channel .npy spectral images and corresponding masks.
 
-    Returns 4 values: (image, mask, image_raw, stem).
+    Returns 5 values: (image, mask, image_raw, apple_mask, stem).
     - image: preprocessed (possibly band-selected, sharpened, LCN, PCA) and augmented tensor.
-    - mask: ground truth mask tensor.
+    - mask: ground truth defect mask tensor.
     - image_raw: original full-band image tensor (before any preprocessing), for visualization.
+    - apple_mask: binary apple region mask (1=apple, 0=background), shape (H, W).
     - stem: file name stem string.
     """
 
@@ -68,10 +69,12 @@ class MSIDataset(Dataset):
                  band_indices=None,
                  use_sharpen=False, sharpen_sigma=1.0, sharpen_alpha=1.5,
                  use_lcn=False, lcn_kernel_size=31, lcn_eps=1e-6,
-                 use_pca=False, pca_matrix_path=""):
+                 use_pca=False, pca_matrix_path="",
+                 apple_mask_threshold=0.05):
         self.file_list = file_list
         self.image_root = os.path.join(data_dir, image_dir)
         self.mask_root = os.path.join(data_dir, mask_dir)
+        self.whole_root = os.path.join(data_dir, "whole")
         self.transform = transform
         self.num_classes = num_classes
 
@@ -97,8 +100,19 @@ class MSIDataset(Dataset):
             self.pca_components = data["components"]  # (n_components, 9)
             self.pca_mean = data["mean"]              # (9,)
 
+        # Apple mask: detect availability of whole/ directory at init time
+        self.apple_mask_threshold = apple_mask_threshold
+        self._whole_dir_exists = os.path.isdir(self.whole_root)
+
     def __len__(self):
         return len(self.file_list)
+
+    @property
+    def apple_mask_source(self):
+        """Return string describing the apple mask source for logging."""
+        if self._whole_dir_exists:
+            return "whole_mask_npy"
+        return f"threshold_fallback(thr={self.apple_mask_threshold})"
 
     def _load_mask(self, stem):
         """Load mask file, supporting both .npy and .png formats."""
@@ -115,6 +129,30 @@ class MSIDataset(Dataset):
             )
         return mask
 
+    def _load_apple_mask(self, stem, image):
+        """Load whole-apple mask from data_dir/whole/, or auto-estimate.
+
+        Source priority:
+            1. whole/ directory: load <stem>.npy, binarize (>0 → 1.0)
+            2. Threshold fallback: mean_reflectance > apple_mask_threshold
+
+        Use ``self.apple_mask_source`` to check which source is active.
+
+        Args:
+            stem: File name stem.
+            image: (C, H, W) raw spectral image (before band selection).
+
+        Returns:
+            apple_mask: (H, W) float32, 1.0=apple / 0.0=background.
+        """
+        if self._whole_dir_exists:
+            whole_path = os.path.join(self.whole_root, stem + ".npy")
+            if os.path.exists(whole_path):
+                m = np.load(whole_path).astype(np.float32)
+                return (m > 0).astype(np.float32)
+        # Fallback: auto-estimate from mean reflectance
+        return (image.mean(axis=0) > self.apple_mask_threshold).astype(np.float32)
+
     def __getitem__(self, idx):
         stem = self.file_list[idx]
 
@@ -125,6 +163,9 @@ class MSIDataset(Dataset):
 
         # Keep a copy of the raw full-band image for visualization
         image_raw = image.copy()
+
+        # Load apple mask (before band selection, needs full-band for fallback)
+        apple_mask = self._load_apple_mask(stem, image)  # (H, W)
 
         # Band selection: (9, H, W) -> (len(band_indices), H, W)
         if self.band_indices is not None:
@@ -148,7 +189,7 @@ class MSIDataset(Dataset):
         # Load mask: (H, W)
         mask = self._load_mask(stem)
 
-        # Apply spatial transforms (both image and mask)
+        # Apply spatial transforms (both image and mask; apple_mask syncs with mask)
         if self.transform is not None:
             image, mask = self.transform(image, mask)
 
@@ -156,8 +197,9 @@ class MSIDataset(Dataset):
         image = torch.from_numpy(np.ascontiguousarray(image)).float()
         mask = torch.from_numpy(np.ascontiguousarray(mask)).long()
         image_raw = torch.from_numpy(np.ascontiguousarray(image_raw)).float()
+        apple_mask = torch.from_numpy(np.ascontiguousarray(apple_mask)).float()
 
-        return image, mask, image_raw, stem
+        return image, mask, image_raw, apple_mask, stem
 
 
 def get_dataset_kwargs(cfg):
@@ -173,6 +215,7 @@ def get_dataset_kwargs(cfg):
         "lcn_eps": data_cfg.get("lcn_eps", 1e-6),
         "use_pca": data_cfg.get("use_pca", False),
         "pca_matrix_path": data_cfg.get("pca_matrix_path", ""),
+        "apple_mask_threshold": data_cfg.get("apple_mask_threshold", 0.05),
     }
 
 
