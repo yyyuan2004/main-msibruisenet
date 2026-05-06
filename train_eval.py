@@ -41,7 +41,7 @@ from data.augment import (
 from data.split import get_data_splits, get_kfold_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
-from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, save_sda_anomaly_maps, _normalize_band
+from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, _normalize_band
 
 
 # ---------------------------------------------------------------------------
@@ -391,9 +391,6 @@ def run_eval(cfg, seed, output_dir, splits=None):
     # Band attention analysis
     analyze_band_weights(model, val_loader, device, eval_dir, cfg["experiment_name"])
 
-    # SDA anomaly heatmaps (auto-skipped if model has no sda_input)
-    save_sda_anomaly_maps(model, val_loader, device, eval_dir)
-
     # Metrics
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)
@@ -491,30 +488,47 @@ def run_single(cfg, seed, output_dir, experiment_name, args, splits=None, fold_t
 
 
 def aggregate_kfold_results(fold_results, output_dir, experiment_name, n_splits):
-    """聚合 k-fold 结果：mean ± std 表格 + JSON。"""
-    metrics_to_aggregate = ["mIoU", "F1_macro", "Precision_macro", "Recall_macro"]
+    """聚合 k-fold 结果：清晰美观的 per-fold 表格 + mean ± std 汇总 + JSON + PNG。
+
+    控制台输出示例：
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║   K-Fold Summary — baseline   (5 folds)                          ║
+        ╠══════════════════════════════════════════════════════════════════╣
+        ║ Fold |  IoU(c1) | mIoU   | F1     | Prec   | Recall              ║
+        ║   1  |  0.7240  | 0.8330 | 0.8821 | 0.8915 | 0.8732              ║
+        ║   2  |  0.7185  | 0.8295 | 0.8784 | 0.8870 | 0.8702              ║
+        ...
+        ║ mean |  0.7196  | 0.8307 | 0.8800 | 0.8893 | 0.8718              ║
+        ║ std  |  0.0042  | 0.0017 | 0.0023 | 0.0030 | 0.0021              ║
+        ╚══════════════════════════════════════════════════════════════════╝
+    """
+    primary = ["IoU_class1", "mIoU", "F1_macro", "Precision_macro", "Recall_macro"]
+    headers = ["IoU(c1)", "mIoU", "F1", "Prec", "Recall"]
+
+    # 解构每个 fold 的指标
+    per_fold_rows = []
+    for k, r in enumerate(fold_results):
+        if r is None:
+            per_fold_rows.append(None)
+            continue
+        iou_c1 = float(r["IoU_per_class"][1]) if "IoU_per_class" in r and len(r["IoU_per_class"]) > 1 else float("nan")
+        per_fold_rows.append({
+            "IoU_class1": iou_c1,
+            "mIoU": float(r.get("mIoU", float("nan"))),
+            "F1_macro": float(r.get("F1_macro", float("nan"))),
+            "Precision_macro": float(r.get("Precision_macro", float("nan"))),
+            "Recall_macro": float(r.get("Recall_macro", float("nan"))),
+        })
+
     aggregated = {}
-    for metric in metrics_to_aggregate:
-        values = [r[metric] for r in fold_results if r is not None and metric in r]
-        if values:
-            aggregated[metric] = {
-                "mean": float(np.mean(values)),
-                "std": float(np.std(values)),
-                "values": [float(v) for v in values],
+    for key in primary:
+        vals = [row[key] for row in per_fold_rows if row is not None and not np.isnan(row[key])]
+        if vals:
+            aggregated[key] = {
+                "mean": float(np.mean(vals)),
+                "std": float(np.std(vals)),
+                "values": [float(v) for v in vals],
             }
-    # class-1 IoU
-    iou_c1 = []
-    for r in fold_results:
-        if r is not None and "IoU_per_class" in r:
-            ipc = r["IoU_per_class"]
-            if len(ipc) > 1:
-                iou_c1.append(float(ipc[1]))
-    if iou_c1:
-        aggregated["IoU_class1"] = {
-            "mean": float(np.mean(iou_c1)),
-            "std": float(np.std(iou_c1)),
-            "values": iou_c1,
-        }
 
     summary_path = os.path.join(output_dir, "kfold_summary.json")
     with open(summary_path, "w") as f:
@@ -522,15 +536,121 @@ def aggregate_kfold_results(fold_results, output_dir, experiment_name, n_splits)
             "experiment": experiment_name,
             "n_splits": n_splits,
             "metrics": aggregated,
+            "per_fold": per_fold_rows,
         }, f, indent=2)
 
-    print("\n" + "=" * 70)
-    print(f" K-Fold Cross-Validation Summary — {experiment_name} (n_splits={n_splits})")
-    print("=" * 70)
-    for metric, stats in aggregated.items():
-        print(f"  {metric:<18}: {stats['mean']:.4f} ± {stats['std']:.4f}")
-    print(f"\n Detail saved to: {summary_path}")
-    print("=" * 70)
+    # ---- Pretty 控制台表格 ----
+    col_w = 9
+    label_w = 4
+    title = f" K-Fold Summary — {experiment_name}   ({n_splits} folds) "
+
+    def _format_row(label, cells):
+        # label: 4 chars right-justified; cells: list of formatted col_w-char strings
+        return (" " + label.rjust(label_w) + " │ "
+                + " │ ".join(cells) + " ")
+
+    head_cells = [f"{h:>{col_w}}" for h in headers]
+    head = _format_row("Fold", head_cells)
+    inner_w = max(len(head), len(title))
+
+    bar_top = "╔" + "═" * inner_w + "╗"
+    bar_mid = "╠" + "═" * inner_w + "╣"
+    bar_bot = "╚" + "═" * inner_w + "╝"
+
+    def _value_row(label, vals):
+        cells = [
+            f"{v:>{col_w}.4f}" if v is not None and not np.isnan(v) else f"{'NaN':>{col_w}}"
+            for v in vals
+        ]
+        return "║" + _format_row(label, cells).ljust(inner_w) + "║"
+
+    print()
+    print(bar_top)
+    print("║" + title.center(inner_w) + "║")
+    print(bar_mid)
+    print("║" + head.ljust(inner_w) + "║")
+    print(bar_mid)
+
+    best_idx = None
+    if "IoU_class1" in aggregated and aggregated["IoU_class1"]["values"]:
+        ious = [row["IoU_class1"] if row is not None else float("-inf") for row in per_fold_rows]
+        best_idx = int(np.argmax(ious))
+
+    for fi, row in enumerate(per_fold_rows):
+        marker = "*" if fi == best_idx else ""
+        label = f"{fi + 1}{marker}"
+        if row is None:
+            print("║" + (" " + label.rjust(label_w) + " │ (no result)").ljust(inner_w) + "║")
+            continue
+        print(_value_row(label, [row[m] for m in primary]))
+
+    print(bar_mid)
+    print(_value_row("mean", [aggregated[m]["mean"] if m in aggregated else float("nan") for m in primary]))
+    print(_value_row("std", [aggregated[m]["std"] if m in aggregated else float("nan") for m in primary]))
+    print(bar_bot)
+
+    if best_idx is not None:
+        print(f"  * = best IoU(c1) fold (fold {best_idx+1})")
+    print(f"  Detail JSON  -> {summary_path}")
+
+    # ---- 同时输出 markdown 表格文件，方便复制到论文/报告 ----
+    md_path = os.path.join(output_dir, "kfold_summary.md")
+    with open(md_path, "w") as f:
+        f.write(f"# K-Fold Summary — {experiment_name} ({n_splits} folds)\n\n")
+        f.write("| Fold | " + " | ".join(headers) + " |\n")
+        f.write("|------|" + "|".join(["------"] * len(headers)) + "|\n")
+        for fi, row in enumerate(per_fold_rows):
+            if row is None:
+                f.write(f"| {fi+1} | " + " | ".join(["NaN"] * len(headers)) + " |\n")
+                continue
+            cells = [f"{row[m]:.4f}" for m in primary]
+            f.write(f"| {fi+1} | " + " | ".join(cells) + " |\n")
+        f.write("| **mean** | " + " | ".join(
+            f"**{aggregated[m]['mean']:.4f}**" if m in aggregated else "NaN" for m in primary
+        ) + " |\n")
+        f.write("| std  | " + " | ".join(
+            f"{aggregated[m]['std']:.4f}" if m in aggregated else "NaN" for m in primary
+        ) + " |\n")
+    print(f"  Markdown     -> {md_path}")
+
+    # ---- 可视化：per-fold 柱状图 + mean±std ----
+    try:
+        png_path = os.path.join(output_dir, "kfold_summary.png")
+        fig, ax = plt.subplots(figsize=(max(8, n_splits * 1.0), 5))
+        x = np.arange(n_splits)
+        n_metrics = len(primary)
+        bar_w = 0.8 / n_metrics
+        colors = ["#4CAF50", "#2196F3", "#FF9800", "#9C27B0", "#00BCD4"]
+        for mi, (mkey, mlabel) in enumerate(zip(primary, headers)):
+            vals = [row[mkey] if row is not None else 0.0 for row in per_fold_rows]
+            ax.bar(x + mi * bar_w - 0.4 + bar_w / 2, vals, bar_w,
+                   color=colors[mi % len(colors)], label=mlabel, edgecolor="black", linewidth=0.4)
+            if mkey in aggregated:
+                ax.axhline(aggregated[mkey]["mean"], color=colors[mi % len(colors)],
+                           linestyle="--", linewidth=0.8, alpha=0.6)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"Fold {i+1}" for i in range(n_splits)])
+        ax.set_ylabel("Score")
+        ax.set_ylim(0, 1.05)
+        ax.set_title(f"K-Fold Cross-Validation — {experiment_name} ({n_splits} folds)")
+        ax.legend(loc="lower right", ncol=n_metrics, fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+
+        # bottom annotation: mean±std
+        summary_line = "  ".join(
+            f"{lbl}: {aggregated[mkey]['mean']:.4f}±{aggregated[mkey]['std']:.4f}"
+            for mkey, lbl in zip(primary, headers) if mkey in aggregated
+        )
+        fig.text(0.5, 0.01, summary_line, ha="center", fontsize=9,
+                 fontfamily="monospace",
+                 bbox=dict(boxstyle="round,pad=0.4", fc="#E3F2FD", ec="#90CAF9"))
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.savefig(png_path, dpi=180)
+        plt.close(fig)
+        print(f"  Bar chart    -> {png_path}")
+    except Exception as e:
+        print(f"  (skipped bar chart: {e})")
 
 
 def main():

@@ -37,28 +37,18 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 
 
-def _get_apple_mask_kwarg(model, apple_mask, device):
-    """Return apple_mask kwarg dict for model forward if model uses SDA."""
-    if getattr(model, 'sda_v2_enabled', False):
-        return {"apple_mask": apple_mask.unsqueeze(1).to(device)}
-    if getattr(model, 'use_sda_input', False):
-        return {"apple_mask": apple_mask.unsqueeze(1).to(device)}
-    return {}
-
-
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     num_batches = 0
 
-    for images, masks, _raw, apple_masks, _stems in dataloader:
+    for images, masks, _raw, _apple_masks, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
-        sda_kw = _get_apple_mask_kwarg(model, apple_masks, device)
 
         optimizer.zero_grad()
-        logits = model(images, **sda_kw)
+        logits = model(images)
         loss = criterion(logits, masks)
         loss.backward()
         optimizer.step()
@@ -77,12 +67,11 @@ def validate(model, dataloader, criterion, metrics, device):
     num_batches = 0
     metrics.reset()
 
-    for images, masks, _raw, apple_masks, _stems in dataloader:
+    for images, masks, _raw, _apple_masks, _stems in dataloader:
         images = images.to(device)
         masks = masks.to(device)
-        sda_kw = _get_apple_mask_kwarg(model, apple_masks, device)
 
-        logits = model(images, **sda_kw)
+        logits = model(images)
         loss = criterion(logits, masks)
 
         preds = logits.argmax(dim=1)
@@ -166,7 +155,6 @@ def train(cfg, seed, output_dir, splits=None):
     model = build_model(cfg).to(device)
     param_count = count_parameters(model)
     print(f"Model: {cfg['experiment_name']} | Parameters: {param_count:.2f}M")
-    print(f"Apple mask source: {train_dataset.apple_mask_source}")
 
     # Loss
     criterion = SegmentationLoss(
@@ -338,8 +326,7 @@ def train(cfg, seed, output_dir, splits=None):
     print(f"\nTraining complete. Best IoU(defect): {best_miou:.4f} at epoch {best_epoch}")
     print(f"Checkpoints saved to: {ckpt_dir}")
 
-    # Return info for ablation summary
-    result = {
+    return {
         "experiment": cfg["experiment_name"],
         "seed": seed,
         "params_M": param_count,
@@ -347,24 +334,6 @@ def train(cfg, seed, output_dir, splits=None):
         "best_epoch": best_epoch,
         "output_dir": output_dir,
     }
-
-    # Log SDA v2 config if present
-    sda_v2_cfg = cfg.get("model", {}).get("sda_v2")
-    if sda_v2_cfg and sda_v2_cfg.get("enabled"):
-        result["sda_config"] = {
-            "sda_enabled": True,
-            "sda_position": sda_v2_cfg.get("position"),
-            "sda_feature_names": sda_v2_cfg.get("features"),
-            "tau_t": float(model.sda_v2.tau_t.item()),
-            "tau_a": float(model.sda_v2.tau_a.item()),
-            "sigma_a": sda_v2_cfg.get("sigma_a"),
-            "sigma_t": sda_v2_cfg.get("sigma_t"),
-            "gate_mode": sda_v2_cfg.get("gate_mode"),
-            "use_whole_mask": train_dataset._whole_dir_exists,
-            "apple_mask_source": train_dataset.apple_mask_source,
-        }
-
-    return result
 
 
 def main():

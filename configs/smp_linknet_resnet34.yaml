@@ -1,32 +1,18 @@
 # ============================================================================
-# Config: sda_decoder — SDA v2 at decoder level (concat with S1/S2 skips)
+# Config: smp_linknet_resnet34 — SMP Linknet with ResNet34 encoder
 # ----------------------------------------------------------------------------
-# SDA v2 anomaly maps are computed at full resolution, then downsampled and
-# concatenated with the S1 and S2 skip connections inside the decoder.
-# This injects spectral anomaly information at the later (higher-res) decoder
-# stages where spatial detail matters most for defect boundary delineation.
+# Linknet 是 U-Net 的轻量替代：用 element-wise add 代替 concat，参数量更小。
+# 与 baseline 共用相同数据/划分/损失/优化器配方。
 # ============================================================================
 
-experiment_name: "sda_decoder"
+experiment_name: "smp_linknet_resnet34"
 
 model:
+  architecture: "smp"
+  smp_arch: "Linknet"
+  smp_encoder: "resnet34"
   num_classes: 2
-  encoder_name: "mobilenetv2"
   encoder_pretrained: true
-  skip_module: "none"
-  use_spectral_conv: false
-  use_aspp: false
-  use_band_attention: false
-  use_global_branch: false
-  use_sda_input: false
-  sda_v2:
-    enabled: true
-    position: "decoder"
-    features: ["spectral_std", "sam", "snv_l2", "mahalanobis"]
-    sigma_a: 3.0
-    sigma_t: 5.0
-    gate_mode: "concat"
-    use_soft_gate: true
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
@@ -40,7 +26,6 @@ data:
   use_sharpen: false
   sharpen_sigma: 1.0
   sharpen_alpha: 1.5
-  apple_mask_threshold: 0.05
 
 train:
   batch_size: 32

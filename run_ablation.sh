@@ -2,7 +2,7 @@
 # ==============================================================================
 # Ablation Study Runner (自动化消融实验)
 #
-# 运行所有 12 个 config x 多个随机种子的完整实验流程：
+# 运行所有 config × 多个随机种子的完整实验流程：
 #   每个 seed 下跑完所有 config，再切换下一个 seed。
 #   每个 (config, seed) 组合自动完成: 训练 → 评估(val set) → 指标曲线图
 #
@@ -15,19 +15,18 @@
 
 set -e
 
-# 12 个 config：4 自研 + 4 SDA v2 + 4 cross-method
+# 11 个 config：4 自研 + 6 SMP cross-method + Fang DLv3+
 CONFIGS=(
     "baseline"
     "spconv_se"
     "input_band_se"
     "global_branch"
-    "sda_input"
-    "sda_s2"
-    "sda_decoder"
-    "sda_multiscale"
+    "smp_unet_resnet34"
+    "smp_unetplusplus_resnet34"
+    "smp_linknet_resnet34"
+    "smp_manet_resnet34"
     "smp_deeplabv3plus_mobilenetv2"
     "smp_fpn_efficientnetb0"
-    "smp_unet_resnet34"
     "deeplabv3plus_fang"
 )
 
