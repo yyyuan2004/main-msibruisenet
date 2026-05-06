@@ -1,26 +1,19 @@
 # ============================================================================
-# Config: sda_skip — baseline + SDA-Skip（skip 处光谱差异注意力）
+# Config: smp_unetplusplus_resnet34 — SMP UNet++ with ResNet34 encoder
 # ----------------------------------------------------------------------------
-# 工作流（在 baseline 基础上的差异）：
-#   [5b] Decoder   : 每个 skip connection 处插入 SpectralDifferenceAttention
-#                   (mode="skip")，在 concat 后的特征上计算谱残差注意力。
-#                   每层一个独立的 SDA 实例 (2 params × 4 levels = 8 params)。
-#                   替代 SE / CBAM 的位置。
-#   其余 train/data/augment 与 baseline 一致
+# UNet++ 在 U-Net 上加了密集嵌套跳连（nested skip pathways），有助于
+# 缩小 encoder/decoder 之间的语义鸿沟。
+# 与 baseline 共用相同数据/划分/损失/优化器配方。
 # ============================================================================
 
-experiment_name: "sda_skip"
+experiment_name: "smp_unetplusplus_resnet34"
 
 model:
+  architecture: "smp"
+  smp_arch: "UnetPlusPlus"
+  smp_encoder: "resnet34"
   num_classes: 2
-  encoder_name: "mobilenetv2"
   encoder_pretrained: true
-  skip_module: "sda"
-  use_spectral_conv: false
-  use_aspp: false
-  use_band_attention: false
-  use_global_branch: false
-  use_sda_input: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
@@ -34,7 +27,6 @@ data:
   use_sharpen: false
   sharpen_sigma: 1.0
   sharpen_alpha: 1.5
-  apple_mask_threshold: 0.05
 
 train:
   batch_size: 32
