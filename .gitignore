@@ -6,3 +6,4 @@ outputs/
 .eggs/
 dist/
 build/
+pretrained/*.pth

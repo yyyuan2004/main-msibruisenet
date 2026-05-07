@@ -157,10 +157,20 @@ def build_model(cfg):
     if arch == "smp":
         from .smp_models import build_smp_model
         return build_smp_model(cfg)
+    if arch == "topformer":
+        from .topformer import build_topformer
+        return build_topformer(cfg)
+    if arch == "seaformer":
+        from .seaformer import build_seaformer
+        return build_seaformer(cfg)
+    if arch == "pidnet":
+        from .pidnet import build_pidnet
+        return build_pidnet(cfg)
     if arch != "default":
         raise ValueError(
             f"Unknown architecture '{arch}'. "
-            f"Available: default, deeplabv3plus_fang, smp"
+            f"Available: default, deeplabv3plus_fang, smp, "
+            f"topformer, seaformer, pidnet"
         )
 
     return SegmentationModel(
