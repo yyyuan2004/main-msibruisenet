@@ -15,7 +15,7 @@
 
 set -e
 
-# 11 个 config：4 自研 + 6 SMP cross-method + Fang DLv3+
+# 19 个 config：4 自研 + 6 SMP + Fang DLv3+ + 3 TopFormer + 3 SeaFormer + 2 PIDNet
 CONFIGS=(
     "baseline"
     "spconv_se"
@@ -28,6 +28,14 @@ CONFIGS=(
     "smp_deeplabv3plus_mobilenetv2"
     "smp_fpn_efficientnetb0"
     "deeplabv3plus_fang"
+    "topformer_t"
+    "topformer_s"
+    "topformer_b"
+    "seaformer_t"
+    "seaformer_s"
+    "seaformer_b"
+    "pidnet_s"
+    "pidnet_m"
 )
 
 SEEDS=(42 123 456)
