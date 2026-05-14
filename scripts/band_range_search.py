@@ -174,10 +174,30 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device,
 
 def run_single_search(cfg, seed, num_epochs, device,
                       range_start, range_end, k, output_dir):
-    """执行单次 (range, k) 穷举搜索，返回 results dict。"""
+    """执行单次 (range, k) 穷举搜索，返回 results dict。
+
+    断点续跑:
+        - 若最终 JSON 已存在 → 直接加载并返回 (跳过整个搜索)。
+        - 否则若 .partial.json 存在且配置匹配 → 加载已完成的组合，跳过它们。
+        - 每完成一个 combo 都会立即写入 .partial.json，意外退出后可从下一个
+          combo 继续。全部完成后写最终 JSON 并删除 partial 文件。
+    """
     sampled_hsi_bands = uniform_sample_bands(range_start, range_end, n=9)
     combos = list(itertools.combinations(range(9), k))
     n_combos = len(combos)
+    range_tag = f"{range_start}-{range_end}"
+
+    os.makedirs(output_dir, exist_ok=True)
+    final_path = os.path.join(output_dir, f"search_{range_tag}_k{k}.json")
+    partial_path = os.path.join(output_dir, f"search_{range_tag}_k{k}.partial.json")
+
+    # Run-level skip
+    if os.path.exists(final_path):
+        print(f"\n{'='*60}")
+        print(f"  [skip] {range_tag} k={k} already complete → {final_path}")
+        print(f"{'='*60}")
+        with open(final_path, "r") as f:
+            return json.load(f)
 
     print(f"\n{'='*60}")
     print(f"  Range: [{range_start}, {range_end}] → 9 bands: {sampled_hsi_bands}")
@@ -185,15 +205,69 @@ def run_single_search(cfg, seed, num_epochs, device,
     print(f"  Epochs/combo: {num_epochs}, Seed: {seed}")
     print(f"{'='*60}")
 
-    results = []
-    best_iou = 0.0
+    # Combo-level resume: load already-completed combos from partial JSON
+    completed = {}  # tuple(local_idx) -> result dict
+    if os.path.exists(partial_path):
+        try:
+            with open(partial_path, "r") as f:
+                partial = json.load(f)
+            cfg_match = (
+                partial.get("range_start") == range_start
+                and partial.get("range_end") == range_end
+                and partial.get("k") == k
+                and partial.get("seed") == seed
+                and partial.get("epochs_per_combo") == num_epochs
+            )
+            if cfg_match:
+                for r in partial.get("results", []):
+                    completed[tuple(r["local_idx"])] = r
+                print(f"  [resume] Loaded {len(completed)}/{n_combos} "
+                      f"completed combos from {partial_path}", flush=True)
+            else:
+                print(f"  [resume] Partial JSON config mismatch, ignoring "
+                      f"{partial_path} and starting fresh.", flush=True)
+        except Exception as e:
+            print(f"  [resume] Failed to read {partial_path}: {e}", flush=True)
+
+    results = list(completed.values())
+    best_iou = max((r["iou"] for r in results), default=0.0)
     best_combo = None
+    for r in results:
+        if r["iou"] == best_iou:
+            best_combo = tuple(r["local_idx"])
     total_start = time.time()
+
+    def _flush_partial():
+        partial_data = {
+            "range": range_tag,
+            "range_start": range_start,
+            "range_end": range_end,
+            "k": k,
+            "seed": seed,
+            "epochs_per_combo": num_epochs,
+            "sampled_9bands_hsi": sampled_hsi_bands,
+            "n_combinations": n_combos,
+            "n_completed": len(results),
+            "results": results,
+        }
+        # Atomic write: tmp + rename, so an interrupt during write doesn't
+        # leave a half-written partial JSON.
+        tmp = partial_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(partial_data, f, indent=2)
+        os.replace(tmp, partial_path)
 
     for i, combo in enumerate(combos):
         hsi_indices = [sampled_hsi_bands[j] for j in combo]
-        t0 = time.time()
         combo_tag = f"[combo {i+1}/{n_combos} hsi={hsi_indices}]"
+
+        if combo in completed:
+            cached = completed[combo]
+            print(f"\n  {combo_tag} [skip] cached IoU={cached['iou']:.4f}",
+                  flush=True)
+            continue
+
+        t0 = time.time()
         print(f"\n  {combo_tag} starting...", flush=True)
         iou = train_and_eval(
             cfg, seed, hsi_indices, num_epochs, device,
@@ -201,26 +275,41 @@ def run_single_search(cfg, seed, num_epochs, device,
         )
         elapsed = time.time() - t0
 
-        results.append({
+        entry = {
             "local_idx": list(combo),
             "hsi_idx": hsi_indices,
             "iou": iou,
-        })
+        }
+        results.append(entry)
+        completed[combo] = entry
 
         if iou > best_iou:
             best_iou = iou
             best_combo = combo
 
-        best_hsi = [sampled_hsi_bands[j] for j in best_combo]
+        # Persist after each combo so an interrupt loses at most one combo.
+        _flush_partial()
+
+        if best_combo is not None:
+            best_hsi = [sampled_hsi_bands[j] for j in best_combo]
+        else:
+            best_hsi = []
         print(f"  >> [{i+1}/{n_combos}] done | local={list(combo)} "
               f"hsi={hsi_indices} IoU={iou:.4f} "
-              f"(best={best_iou:.4f} @ hsi={best_hsi}) {elapsed:.1f}s",
+              f"(best={best_iou:.4f} @ hsi={best_hsi}) {elapsed:.1f}s "
+              f"[saved partial]",
               flush=True)
 
     total_elapsed = time.time() - total_start
-    results.sort(key=lambda x: x["iou"], reverse=True)
 
-    range_tag = f"{range_start}-{range_end}"
+    # Recompute best in case partial-loaded combos had higher IoU
+    if results and best_combo is None:
+        best_entry = max(results, key=lambda x: x["iou"])
+        best_combo = tuple(best_entry["local_idx"])
+        best_iou = best_entry["iou"]
+
+    sorted_results = sorted(results, key=lambda x: x["iou"], reverse=True)
+
     search_result = {
         "range": range_tag,
         "range_start": range_start,
@@ -230,20 +319,24 @@ def run_single_search(cfg, seed, num_epochs, device,
         "epochs_per_combo": num_epochs,
         "sampled_9bands_hsi": sampled_hsi_bands,
         "n_combinations": n_combos,
-        "best_local_idx": list(best_combo),
-        "best_hsi_idx": [sampled_hsi_bands[j] for j in best_combo],
+        "best_local_idx": list(best_combo) if best_combo else [],
+        "best_hsi_idx": [sampled_hsi_bands[j] for j in best_combo] if best_combo else [],
         "best_iou": best_iou,
         "total_time_sec": round(total_elapsed, 1),
-        "all_results": results,
+        "all_results": sorted_results,
     }
 
-    os.makedirs(output_dir, exist_ok=True)
-    json_path = os.path.join(output_dir, f"search_{range_tag}_k{k}.json")
-    with open(json_path, "w") as f:
+    # Atomic final write, then remove partial file.
+    tmp = final_path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(search_result, f, indent=2)
-    print(f"\n  Results saved to {json_path}")
+    os.replace(tmp, final_path)
+    if os.path.exists(partial_path):
+        os.remove(partial_path)
+
+    print(f"\n  Results saved to {final_path}")
     print(f"  Best k={k} subset: hsi={search_result['best_hsi_idx']} "
-          f"IoU={best_iou:.4f} ({total_elapsed:.1f}s total)")
+          f"IoU={best_iou:.4f} ({total_elapsed:.1f}s this run)")
 
     return search_result
 

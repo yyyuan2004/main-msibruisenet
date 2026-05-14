@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import yaml
 import numpy as np
 import torch
@@ -435,8 +436,27 @@ def run_eval(cfg, seed, output_dir, splits=None):
 # ---------------------------------------------------------------------------
 
 def run_single(cfg, seed, output_dir, experiment_name, args, splits=None, fold_tag=""):
-    """运行单次 (config, seed[, fold]) 的完整 train→eval→viz 流程。"""
+    """运行单次 (config, seed[, fold]) 的完整 train→eval→viz 流程。
+
+    支持断点续跑:
+        - 若 output_dir/done.flag 已存在 → 跳过整个流程，从 eval_results.json
+          读回上次的指标。
+        - 训练阶段由 train.py 内部基于 last_checkpoint.pth 自动续跑。
+    """
     os.makedirs(output_dir, exist_ok=True)
+    done_flag = os.path.join(output_dir, "done.flag")
+
+    # Run-level skip: full pipeline already completed before
+    if os.path.exists(done_flag):
+        print("=" * 70)
+        print(f" [skip] Run already completed: {experiment_name}{fold_tag}")
+        print(f"        Found {done_flag}")
+        print("=" * 70)
+        cached_eval_path = os.path.join(output_dir, "eval_results.json")
+        if os.path.exists(cached_eval_path):
+            with open(cached_eval_path, "r") as _f:
+                return json.load(_f)
+        return None
 
     # Save config copy
     with open(os.path.join(output_dir, "config.yaml"), "w") as f:
@@ -449,7 +469,7 @@ def run_single(cfg, seed, output_dir, experiment_name, args, splits=None, fold_t
     print(f" Output: {output_dir}")
     print("=" * 70)
 
-    # Step 1: Training
+    # Step 1: Training (train.py handles per-epoch resume internally)
     if not args.skip_train:
         print("\n[Step 1/4] Training...")
         train_result = train(cfg, seed, output_dir, splits=splits)
@@ -479,6 +499,20 @@ def run_single(cfg, seed, output_dir, experiment_name, args, splits=None, fold_t
         visualize_augmentations(cfg, output_dir, num_samples=3)
     else:
         print("\n[Step 4/4] Augmentation visualization skipped (use --vis_augment to enable)")
+
+    # Cache eval results + mark run as done so reruns are skipped.
+    if eval_results is not None:
+        try:
+            cached_path = os.path.join(output_dir, "eval_results.json")
+            with open(cached_path, "w") as _f:
+                json.dump(eval_results, _f, indent=2, default=str)
+        except Exception as _e:
+            print(f"  (skipped eval_results.json: {_e})")
+
+    with open(done_flag, "w") as _f:
+        _f.write(f"completed_at={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        _f.write(f"experiment={experiment_name}{fold_tag}\n")
+        _f.write(f"seed={seed}\n")
 
     print("\n" + "=" * 70)
     print(f" Run complete: {experiment_name}{fold_tag}")
