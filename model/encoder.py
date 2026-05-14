@@ -53,11 +53,13 @@ class MobileNetV2Encoder(nn.Module):
 
         # Copy pretrained weights for first 3 channels
         with torch.no_grad():
-            new_conv.weight[:, :3, :, :] = original_conv.weight.clone()
-            # Kaiming init for remaining channels
-            nn.init.kaiming_normal_(
-                new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
-            )
+            copy_ch = min(in_channels, 3)
+            new_conv.weight[:, :copy_ch, :, :] = original_conv.weight[:, :copy_ch].clone()
+            # Kaiming init for remaining channels (only if any extra channels exist)
+            if in_channels > 3:
+                nn.init.kaiming_normal_(
+                    new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
+                )
 
         backbone.features[0][0] = new_conv
 
@@ -123,10 +125,12 @@ class MobileNetV3Encoder(nn.Module):
         )
 
         with torch.no_grad():
-            new_conv.weight[:, :3, :, :] = original_conv.weight.clone()
-            nn.init.kaiming_normal_(
-                new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
-            )
+            copy_ch = min(in_channels, 3)
+            new_conv.weight[:, :copy_ch, :, :] = original_conv.weight[:, :copy_ch].clone()
+            if in_channels > 3:
+                nn.init.kaiming_normal_(
+                    new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
+                )
 
         backbone.features[0][0] = new_conv
 
@@ -195,10 +199,12 @@ class EfficientNetB0Encoder(nn.Module):
         )
 
         with torch.no_grad():
-            new_conv.weight[:, :3, :, :] = original_conv.weight.clone()
-            nn.init.kaiming_normal_(
-                new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
-            )
+            copy_ch = min(in_channels, 3)
+            new_conv.weight[:, :copy_ch, :, :] = original_conv.weight[:, :copy_ch].clone()
+            if in_channels > 3:
+                nn.init.kaiming_normal_(
+                    new_conv.weight[:, 3:, :, :], mode="fan_out", nonlinearity="relu"
+                )
 
         backbone.features[0][0] = new_conv
 

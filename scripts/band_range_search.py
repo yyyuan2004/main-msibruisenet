@@ -49,8 +49,14 @@ def uniform_sample_bands(start, end, n=9):
     return np.linspace(start, end, n, dtype=int).tolist()
 
 
-def train_and_eval(cfg, seed, band_indices, num_epochs, device):
-    """Train a model with given band_indices and return val class-1 IoU."""
+def train_and_eval(cfg, seed, band_indices, num_epochs, device,
+                   verbose=True, combo_tag=""):
+    """Train a model with given band_indices and return val class-1 IoU.
+
+    Args:
+        verbose: If True, print per-epoch train loss and val IoU.
+        combo_tag: Optional prefix string for per-epoch print lines.
+    """
     set_seed(seed)
 
     data_dir = cfg["data"]["data_dir"]
@@ -65,6 +71,9 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
 
     ds_kwargs = get_dataset_kwargs(cfg)
     ds_kwargs["band_indices"] = list(band_indices)
+    # Lazy-load: only read the selected bands from each .npy file (mmap).
+    # Avoids loading all 200+ channels for each sample.
+    ds_kwargs["lazy_load"] = True
 
     train_dataset = MSIDataset(
         splits["train"], data_dir=data_dir,
@@ -123,7 +132,10 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
 
     best_iou = 0.0
     for epoch in range(1, num_epochs + 1):
+        epoch_t0 = time.time()
         model.train()
+        running_loss = 0.0
+        n_batches = 0
         for images, masks, _raw, _amask, _stems in train_loader:
             images = images.to(device)
             masks = masks.to(device)
@@ -131,7 +143,10 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
             loss = criterion(model(images), masks)
             loss.backward()
             optimizer.step()
+            running_loss += float(loss.item())
+            n_batches += 1
         scheduler.step()
+        avg_loss = running_loss / max(n_batches, 1)
 
         model.eval()
         metrics.reset()
@@ -145,6 +160,14 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device):
         defect_iou = float(results["IoU_per_class"][1])
         if defect_iou > best_iou:
             best_iou = defect_iou
+
+        if verbose:
+            elapsed = time.time() - epoch_t0
+            lr = optimizer.param_groups[0]["lr"]
+            print(f"    {combo_tag} epoch {epoch:>3}/{num_epochs} "
+                  f"loss={avg_loss:.4f} val_IoU={defect_iou:.4f} "
+                  f"best={best_iou:.4f} lr={lr:.2e} {elapsed:.1f}s",
+                  flush=True)
 
     return best_iou
 
@@ -170,7 +193,12 @@ def run_single_search(cfg, seed, num_epochs, device,
     for i, combo in enumerate(combos):
         hsi_indices = [sampled_hsi_bands[j] for j in combo]
         t0 = time.time()
-        iou = train_and_eval(cfg, seed, hsi_indices, num_epochs, device)
+        combo_tag = f"[combo {i+1}/{n_combos} hsi={hsi_indices}]"
+        print(f"\n  {combo_tag} starting...", flush=True)
+        iou = train_and_eval(
+            cfg, seed, hsi_indices, num_epochs, device,
+            verbose=True, combo_tag=combo_tag,
+        )
         elapsed = time.time() - t0
 
         results.append({
@@ -184,9 +212,10 @@ def run_single_search(cfg, seed, num_epochs, device,
             best_combo = combo
 
         best_hsi = [sampled_hsi_bands[j] for j in best_combo]
-        print(f"  [{i+1}/{n_combos}] local={list(combo)} hsi={hsi_indices} "
-              f"IoU={iou:.4f} (best={best_iou:.4f} @ hsi={best_hsi}) "
-              f"{elapsed:.1f}s")
+        print(f"  >> [{i+1}/{n_combos}] done | local={list(combo)} "
+              f"hsi={hsi_indices} IoU={iou:.4f} "
+              f"(best={best_iou:.4f} @ hsi={best_hsi}) {elapsed:.1f}s",
+              flush=True)
 
     total_elapsed = time.time() - total_start
     results.sort(key=lambda x: x["iou"], reverse=True)
