@@ -2,8 +2,8 @@
 
 # MSI-Bruise-Seg：苹果多光谱图像瘀伤分割（MobileNetV2-UNet + 注意力模块消融）
 
-基于 9 波段近红外多光谱图像（MSI）的苹果瘀伤（defect）像素级语义分割项目。
-以轻量级 MobileNetV2-UNet 为骨架，对比若干"可插拔"模块（1D 频谱卷积、SE/CBAM、动态 BandSE、全局显著性分支）以及 7 个外部参考架构（SMP U-Net/UNet++/Linknet/MAnet/DeepLabV3+/FPN、Fang 2025 改进版 DeepLabV3+），在相同训练/评估配方下做消融对照。
+基于近红外多光谱图像（MSI）的苹果瘀伤（defect）像素级语义分割项目。
+以轻量级 MobileNetV2-UNet 为骨架，对比若干"可插拔"模块（1D 频谱卷积、SE/CBAM、动态 BandSE、全局显著性分支）以及多个外部参考架构（SMP U-Net/UNet++/Linknet/MAnet/DeepLabV3+/FPN），在相同训练/评估配方下做消融对照。
 
 ---
 
