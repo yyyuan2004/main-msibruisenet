@@ -342,8 +342,10 @@ def _adapt_conv_weight(weight, target_in_ch):
         return weight
     out_ch = weight.shape[0]
     new_w = torch.zeros(out_ch, target_in_ch, *weight.shape[2:])
-    new_w[:, :3] = weight
-    nn.init.kaiming_normal_(new_w[:, 3:], mode='fan_out', nonlinearity='relu')
+    copy_ch = min(target_in_ch, 3)
+    new_w[:, :copy_ch] = weight[:, :copy_ch]
+    if target_in_ch > 3:
+        nn.init.kaiming_normal_(new_w[:, 3:], mode='fan_out', nonlinearity='relu')
     return new_w
 
 

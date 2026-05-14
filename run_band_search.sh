@@ -93,8 +93,8 @@ for cfg in "${SEARCH_CONFIGS[@]}"; do
 done
 echo "=============================================="
 
-# 构建命令
-CMD="python scripts/band_range_search.py \
+# 构建命令 (-u: 不缓冲 stdout, 让每个 epoch 的进度立即可见)
+CMD="python -u scripts/band_range_search.py \
     --config ${BASE_CONFIG} \
     --searches ${SEARCHES} \
     --seed ${SEED} \

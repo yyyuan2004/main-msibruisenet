@@ -83,7 +83,8 @@ class MSIDataset(Dataset):
                  use_sharpen=False, sharpen_sigma=1.0, sharpen_alpha=1.5,
                  use_lcn=False, lcn_kernel_size=31, lcn_eps=1e-6,
                  use_pca=False, pca_matrix_path="",
-                 apple_mask_threshold=0.05):
+                 apple_mask_threshold=0.05,
+                 lazy_load=False):
         self.file_list = file_list
         self.image_root = os.path.join(data_dir, image_dir)
         self.mask_root = os.path.join(data_dir, mask_dir)
@@ -116,6 +117,9 @@ class MSIDataset(Dataset):
         # Apple mask: detect availability of whole/ directory at init time
         self.apple_mask_threshold = apple_mask_threshold
         self._whole_dir_exists = os.path.isdir(self.whole_root)
+
+        # Lazy loading: use mmap + only read selected bands (for large HSI files)
+        self.lazy_load = lazy_load
 
     def __len__(self):
         return len(self.file_list)
@@ -169,20 +173,32 @@ class MSIDataset(Dataset):
     def __getitem__(self, idx):
         stem = self.file_list[idx]
 
-        # Load spectral image: (H, W, 9) -> (9, H, W)
         image_path = os.path.join(self.image_root, stem + ".npy")
-        image = np.load(image_path).astype(np.float32)  # (H, W, 9)
-        image = image.transpose(2, 0, 1)  # (9, H, W)
 
-        # Keep a copy of the raw full-band image for visualization
-        image_raw = image.copy()
+        if self.lazy_load and self.band_indices is not None:
+            # mmap-based partial read: only materialize the selected bands.
+            # Avoids reading the full 200+ channel cube for each sample.
+            mm = np.load(image_path, mmap_mode="r")  # (H, W, C_total)
+            # Fancy indexing on the last axis triggers a copy of just those bands.
+            image = np.array(mm[..., self.band_indices], dtype=np.float32)
+            image = image.transpose(2, 0, 1)  # (C_sel, H, W)
+            # For band search, image_raw is only used as a placeholder in the tuple.
+            image_raw = image
+            apple_mask = self._load_apple_mask(stem, image)  # uses selected-band mean
+        else:
+            # Load spectral image: (H, W, C) -> (C, H, W)
+            image = np.load(image_path).astype(np.float32)
+            image = image.transpose(2, 0, 1)
 
-        # Load apple mask (before band selection, needs full-band for fallback)
-        apple_mask = self._load_apple_mask(stem, image)  # (H, W)
+            # Keep a copy of the raw full-band image for visualization
+            image_raw = image.copy()
 
-        # Band selection: (9, H, W) -> (len(band_indices), H, W)
-        if self.band_indices is not None:
-            image = image[self.band_indices]
+            # Load apple mask (before band selection, needs full-band for fallback)
+            apple_mask = self._load_apple_mask(stem, image)  # (H, W)
+
+            # Band selection
+            if self.band_indices is not None:
+                image = image[self.band_indices]
 
         # Optional Unsharp Masking
         if self.use_sharpen:
@@ -231,6 +247,7 @@ def get_dataset_kwargs(cfg):
         "use_pca": data_cfg.get("use_pca", False),
         "pca_matrix_path": data_cfg.get("pca_matrix_path", ""),
         "apple_mask_threshold": data_cfg.get("apple_mask_threshold", 0.05),
+        "lazy_load": data_cfg.get("lazy_load", False),
     }
 
 
