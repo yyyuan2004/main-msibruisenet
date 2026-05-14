@@ -13,9 +13,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, MobileNetV3Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import (
-    SpectralConv1D, ASPP, BandAttention, InputBandSE, GlobalSaliencyBranch,
-)
+from .modules import SpectralConv1D, InputBandSE
 
 
 ENCODERS = {
@@ -30,43 +28,22 @@ class SegmentationModel(nn.Module):
 
     Configurable components:
         - Encoder: MobileNetV2 / EfficientNet-B0 / MobileNetV3
-        - Skip modules: none / se / cbam
-        - ASPP at bottleneck (optional)
+        - Skip modules: none / se
         - SpectralConv1D after S1 (optional)
-        - BandAttention / InputBandSE before encoder (optional)
-        - GlobalSaliencyBranch guiding bottleneck (optional)
+        - InputBandSE before encoder (optional)
     """
 
     def __init__(self, num_classes=2, in_channels=9,
                  encoder_name="mobilenetv2", pretrained=True,
                  skip_module="none", se_reduction=16,
                  use_spectral_conv=False, spectral_conv_kernel_size=3,
-                 use_aspp=False, aspp_out_channels=256,
-                 aspp_atrous_rates=(6, 12, 18), aspp_dropout=0.5,
-                 use_band_attention=False,
-                 band_attention_type="static", band_se_reduction=2,
-                 use_global_branch=False, global_downsample=4):
+                 use_band_attention=False, band_se_reduction=2):
         super().__init__()
 
-        # Optional band attention at input level (before encoder)
-        # "static" = BandAttention (fixed per-band scalars)
-        # "dynamic" = InputBandSE (per-image GAP->FC->Sigmoid)
         self.use_band_attention = use_band_attention
-        self.band_attention_type = band_attention_type
         if use_band_attention:
-            if band_attention_type == "dynamic":
-                self.band_attention = InputBandSE(
-                    num_bands=in_channels, reduction=band_se_reduction,
-                )
-            else:
-                self.band_attention = BandAttention(num_bands=in_channels)
-
-        # Optional global saliency branch guiding bottleneck features
-        self.use_global_branch = use_global_branch
-        if use_global_branch:
-            self.global_branch = GlobalSaliencyBranch(
-                in_channels=in_channels,
-                downsample_factor=global_downsample,
+            self.band_attention = InputBandSE(
+                num_bands=in_channels, reduction=band_se_reduction,
             )
 
         # Encoder
@@ -88,32 +65,16 @@ class SegmentationModel(nn.Module):
                 kernel_size=spectral_conv_kernel_size,
             )
 
-        # Optional ASPP at bottleneck (S5)
-        self.use_aspp = use_aspp
-        bottleneck_channels = None
-        if use_aspp:
-            self.aspp = ASPP(
-                in_channels=enc_channels[4],
-                out_channels=aspp_out_channels,
-                atrous_rates=aspp_atrous_rates,
-                dropout=aspp_dropout,
-            )
-            bottleneck_channels = aspp_out_channels
-
         # Decoder
         self.decoder = UNetDecoder(
             encoder_channels=enc_channels,
             num_classes=num_classes,
             skip_module=skip_module,
             se_reduction=se_reduction,
-            bottleneck_channels=bottleneck_channels,
         )
 
     def forward(self, x):
         input_size = x.shape[2:]
-
-        if self.use_global_branch:
-            x_input = x
 
         if self.use_band_attention:
             x = self.band_attention(x)
@@ -122,13 +83,6 @@ class SegmentationModel(nn.Module):
 
         if self.use_spectral_conv:
             features[0] = self.spectral_conv(features[0])
-
-        if self.use_aspp:
-            features[4] = self.aspp(features[4])
-
-        if self.use_global_branch:
-            attn_map = self.global_branch(x_input, features[4].shape[2:])
-            features[4] = features[4] * attn_map
 
         logits = self.decoder(features)
         logits = F.interpolate(logits, size=input_size, mode="bilinear",
@@ -145,15 +99,14 @@ def build_model(cfg):
 
     Multi-architecture dispatch via cfg["model"]["architecture"]:
         - "default" (or absent): SegmentationModel
-        - "deeplabv3plus_fang": Fang 2025 Improved DeepLabV3+
         - "smp": segmentation_models_pytorch wrapper
+        - "topformer": TopFormer (CVPR 2022)
+        - "seaformer": SeaFormer (ICLR 2023)
+        - "pidnet": PIDNet (CVPR 2023)
     """
     model_cfg = cfg["model"]
     arch = model_cfg.get("architecture", "default")
 
-    if arch == "deeplabv3plus_fang":
-        from .deeplabv3plus import build_deeplabv3plus_fang
-        return build_deeplabv3plus_fang(cfg)
     if arch == "smp":
         from .smp_models import build_smp_model
         return build_smp_model(cfg)
@@ -169,8 +122,7 @@ def build_model(cfg):
     if arch != "default":
         raise ValueError(
             f"Unknown architecture '{arch}'. "
-            f"Available: default, deeplabv3plus_fang, smp, "
-            f"topformer, seaformer, pidnet"
+            f"Available: default, smp, topformer, seaformer, pidnet"
         )
 
     return SegmentationModel(
@@ -182,13 +134,6 @@ def build_model(cfg):
         se_reduction=model_cfg.get("se_reduction", 16),
         use_spectral_conv=model_cfg.get("use_spectral_conv", False),
         spectral_conv_kernel_size=model_cfg.get("spectral_conv_kernel_size", 3),
-        use_aspp=model_cfg.get("use_aspp", False),
-        aspp_out_channels=model_cfg.get("aspp_out_channels", 256),
-        aspp_atrous_rates=tuple(model_cfg.get("aspp_atrous_rates", [6, 12, 18])),
-        aspp_dropout=model_cfg.get("aspp_dropout", 0.5),
         use_band_attention=model_cfg.get("use_band_attention", False),
-        band_attention_type=model_cfg.get("band_attention_type", "static"),
         band_se_reduction=model_cfg.get("band_se_reduction", 2),
-        use_global_branch=model_cfg.get("use_global_branch", False),
-        global_downsample=model_cfg.get("global_downsample", 4),
     )

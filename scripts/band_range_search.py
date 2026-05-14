@@ -93,19 +93,26 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device,
     )
 
     train_cfg = cfg["train"]
+    nw = train_cfg.get("num_workers", 4)
+    persist = nw > 0
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=True,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=persist,
+        prefetch_factor=2 if nw > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=False,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=nw,
+        pin_memory=True,
+        persistent_workers=persist,
+        prefetch_factor=2 if nw > 0 else None,
     )
 
     cfg_copy = json.loads(json.dumps(cfg))
@@ -137,8 +144,8 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device,
         running_loss = 0.0
         n_batches = 0
         for images, masks, _raw, _amask, _stems in train_loader:
-            images = images.to(device)
-            masks = masks.to(device)
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
             optimizer.zero_grad()
             loss = criterion(model(images), masks)
             loss.backward()
@@ -152,8 +159,8 @@ def train_and_eval(cfg, seed, band_indices, num_epochs, device,
         metrics.reset()
         with torch.no_grad():
             for images, masks, _raw, _amask, _stems in val_loader:
-                images = images.to(device)
-                masks = masks.to(device)
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
                 preds = model(images).argmax(dim=1)
                 metrics.update(preds, masks)
         results = metrics.compute()

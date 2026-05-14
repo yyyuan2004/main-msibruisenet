@@ -18,11 +18,8 @@ model:
   encoder_pretrained: true
   skip_module: "none"
   use_spectral_conv: false
-  use_aspp: false
   use_band_attention: true
-  band_attention_type: "dynamic"   # dynamic = InputBandSE; static = BandAttention
   band_se_reduction: 2
-  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"

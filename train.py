@@ -22,14 +22,20 @@ from model.loss import SegmentationLoss
 from utils.metrics import SegmentationMetrics
 
 
-def set_seed(seed):
-    """Set random seed for reproducibility."""
+def set_seed(seed, deterministic=False):
+    """Set random seed for reproducibility.
+
+    Args:
+        seed: Random seed.
+        deterministic: If True, force fully deterministic cuDNN (slower).
+            Default False enables cudnn.benchmark for ~10-30% speedup.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
 
 
 def _save_resume_checkpoint(path, epoch, model, optimizer, scheduler,
@@ -98,8 +104,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     num_batches = 0
 
     for images, masks, _raw, _apple_masks, _stems in dataloader:
-        images = images.to(device)
-        masks = masks.to(device)
+        images = images.to(device, non_blocking=True)
+        masks = masks.to(device, non_blocking=True)
 
         optimizer.zero_grad()
         logits = model(images)
@@ -122,8 +128,8 @@ def validate(model, dataloader, criterion, metrics, device):
     metrics.reset()
 
     for images, masks, _raw, _apple_masks, _stems in dataloader:
-        images = images.to(device)
-        masks = masks.to(device)
+        images = images.to(device, non_blocking=True)
+        masks = masks.to(device, non_blocking=True)
 
         logits = model(images)
         loss = criterion(logits, masks)
@@ -189,20 +195,26 @@ def train(cfg, seed, output_dir, splits=None):
 
     # DataLoaders
     train_cfg = cfg["train"]
+    num_workers = train_cfg.get("num_workers", 4)
+    use_persistent = num_workers > 0
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=True,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=num_workers,
         pin_memory=train_cfg.get("pin_memory", True),
         drop_last=True,
+        persistent_workers=use_persistent,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=False,
-        num_workers=train_cfg.get("num_workers", 4),
+        num_workers=num_workers,
         pin_memory=train_cfg.get("pin_memory", True),
+        persistent_workers=use_persistent,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     # Model

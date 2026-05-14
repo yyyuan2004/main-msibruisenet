@@ -32,8 +32,8 @@ def evaluate(model, dataloader, metrics, device, num_classes):
     all_stems = []
 
     for images, masks, images_raw, _apple_masks, stems in dataloader:
-        images_dev = images.to(device)
-        masks_dev = masks.to(device)
+        images_dev = images.to(device, non_blocking=True)
+        masks_dev = masks.to(device, non_blocking=True)
 
         logits = model(images_dev)
         preds = logits.argmax(dim=1)
@@ -188,96 +188,54 @@ def print_results(results, experiment_name):
 
 
 def analyze_band_weights(model, dataloader, device, output_dir, experiment_name):
-    """Extract and visualize band attention weights.
+    """Extract and visualize InputBandSE per-image band attention weights.
 
-    Supports both BandAttention (static, no input needed) and InputBandSE
-    (dynamic, per-image weights via GAP+FC). Saves bar chart + text file.
-
-    Skipped silently if model does not have band_attention.
+    Skipped silently if model does not have an InputBandSE band_attention.
     """
     if not hasattr(model, 'band_attention'):
         return
 
-    from model.modules import InputBandSE
-    is_dynamic = isinstance(model.band_attention, InputBandSE)
-
     print("\nAnalyzing band attention weights...")
     model.eval()
 
-    if is_dynamic:
-        # InputBandSE: collect per-image weights
-        all_weights = []
-        with torch.no_grad():
-            for images, _, _, _, _ in dataloader:
-                images_dev = images.to(device)
-                w = model.band_attention.get_weights(images_dev)  # (B, C)
-                all_weights.append(w)
-        all_weights = np.concatenate(all_weights, axis=0)  # (N, C)
-        avg_weights = all_weights.mean(axis=0)
-        std_weights = all_weights.std(axis=0)
+    all_weights = []
+    with torch.no_grad():
+        for images, _, _, _, _ in dataloader:
+            images_dev = images.to(device, non_blocking=True)
+            w = model.band_attention.get_weights(images_dev)  # (B, C)
+            all_weights.append(w)
+    all_weights = np.concatenate(all_weights, axis=0)  # (N, C)
+    avg_weights = all_weights.mean(axis=0)
+    std_weights = all_weights.std(axis=0)
 
-        # Print per-band statistics
-        print("  Band Importance Weights (dynamic, per-image statistics):")
-        print(f"  {'Band':>6} {'Mean':>8} {'Std':>8} {'Min':>8} {'Max':>8}")
+    print("  Band Importance Weights (dynamic, per-image statistics):")
+    print(f"  {'Band':>6} {'Mean':>8} {'Std':>8} {'Min':>8} {'Max':>8}")
+    for i in range(all_weights.shape[1]):
+        print(f"  Band {i+1:>2}: {avg_weights[i]:.4f}  {std_weights[i]:.4f}  "
+              f"{all_weights[:, i].min():.4f}  {all_weights[:, i].max():.4f}")
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bands = range(1, len(avg_weights) + 1)
+    bars = ax.bar(bands, avg_weights, yerr=std_weights, capsize=4,
+                  color='steelblue', edgecolor='black', alpha=0.8)
+    for bar_item in bars:
+        yval = bar_item.get_height()
+        ax.text(bar_item.get_x() + bar_item.get_width() / 2, yval + 0.01,
+                f'{yval:.3f}', ha='center', va='bottom', fontsize=9)
+    ax.set_xlabel('Band Index', fontsize=12)
+    ax.set_ylabel('Weight (mean +/- std)', fontsize=12)
+    ax.set_title(f'Dynamic Band Importance ({experiment_name})', fontsize=14)
+    ax.set_xticks(bands)
+    ax.set_ylim(0, min(max(avg_weights) + 0.15, 1.0))
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+    with open(os.path.join(output_dir, "band_weights.txt"), "w") as f:
+        f.write(f"Experiment: {experiment_name} (InputBandSE dynamic)\n\n")
+        f.write(f"{'Band':<10} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}\n")
+        f.write("-" * 50 + "\n")
         for i in range(all_weights.shape[1]):
-            print(f"  Band {i+1:>2}: {avg_weights[i]:.4f}  {std_weights[i]:.4f}  "
-                  f"{all_weights[:, i].min():.4f}  {all_weights[:, i].max():.4f}")
-
-        # Bar chart with error bars
-        fig, ax = plt.subplots(figsize=(10, 5))
-        bands = range(1, len(avg_weights) + 1)
-        bars = ax.bar(bands, avg_weights, yerr=std_weights, capsize=4,
-                      color='steelblue', edgecolor='black', alpha=0.8)
-        for bar_item in bars:
-            yval = bar_item.get_height()
-            ax.text(bar_item.get_x() + bar_item.get_width() / 2, yval + 0.01,
-                    f'{yval:.3f}', ha='center', va='bottom', fontsize=9)
-        ax.set_xlabel('Band Index', fontsize=12)
-        ax.set_ylabel('Weight (mean +/- std)', fontsize=12)
-        ax.set_title(f'Dynamic Band Importance ({experiment_name})', fontsize=14)
-        ax.set_xticks(bands)
-        ax.set_ylim(0, min(max(avg_weights) + 0.15, 1.0))
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        # Save text with statistics
-        with open(os.path.join(output_dir, "band_weights.txt"), "w") as f:
-            f.write(f"Experiment: {experiment_name} (InputBandSE dynamic)\n\n")
-            f.write(f"{'Band':<10} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}\n")
-            f.write("-" * 50 + "\n")
-            for i in range(all_weights.shape[1]):
-                f.write(f"Band {i+1:<4}  {avg_weights[i]:>10.6f} {std_weights[i]:>10.6f} "
-                        f"{all_weights[:, i].min():>10.6f} {all_weights[:, i].max():>10.6f}\n")
-    else:
-        # Static BandAttention: fixed per-band scalars
-        avg_weights = model.band_attention.get_weights()  # (C,) numpy
-
-        print("  Band Importance Weights (static, shared across all images):")
-        for i, w in enumerate(avg_weights):
-            bar = "#" * int(w * 30)
-            print(f"    Band {i+1}: {w:.4f}  {bar}")
-
-        # Bar chart
-        fig, ax = plt.subplots(figsize=(10, 5))
-        bands = range(1, len(avg_weights) + 1)
-        bars = ax.bar(bands, avg_weights, color='steelblue', edgecolor='black', alpha=0.8)
-        for bar_item in bars:
-            yval = bar_item.get_height()
-            ax.text(bar_item.get_x() + bar_item.get_width() / 2, yval + 0.01,
-                    f'{yval:.3f}', ha='center', va='bottom', fontsize=9)
-        ax.set_xlabel('Band Index', fontsize=12)
-        ax.set_ylabel('Learned Importance Weight', fontsize=12)
-        ax.set_title(f'Band Importance Analysis ({experiment_name})', fontsize=14)
-        ax.set_xticks(bands)
-        ax.set_ylim(0, max(avg_weights) + 0.1)
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        # Save text
-        with open(os.path.join(output_dir, "band_weights.txt"), "w") as f:
-            f.write(f"Experiment: {experiment_name} (BandAttention static)\n\n")
-            f.write(f"{'Band':<10} {'Weight':>10}\n")
-            f.write("-" * 22 + "\n")
-            for i, w in enumerate(avg_weights):
-                f.write(f"Band {i+1:<4}  {w:>10.6f}\n")
+            f.write(f"Band {i+1:<4}  {avg_weights[i]:>10.6f} {std_weights[i]:>10.6f} "
+                    f"{all_weights[:, i].min():>10.6f} {all_weights[:, i].max():>10.6f}\n")
 
     fig.savefig(os.path.join(output_dir, "band_weights.png"), dpi=200, bbox_inches='tight')
     plt.close(fig)
@@ -339,11 +297,15 @@ def main():
         num_classes=cfg["data"]["num_classes"],
         **ds_kwargs,
     )
+    _nw = cfg["train"].get("num_workers", 4)
     dataloader = DataLoader(
         dataset,
         batch_size=cfg["train"]["batch_size"],
         shuffle=False,
-        num_workers=cfg["train"].get("num_workers", 4),
+        num_workers=_nw,
+        pin_memory=True,
+        persistent_workers=_nw > 0,
+        prefetch_factor=2 if _nw > 0 else None,
     )
 
     # Model

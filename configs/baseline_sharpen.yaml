@@ -27,9 +27,7 @@ model:
   encoder_pretrained: true
   skip_module: "none"
   use_spectral_conv: false
-  use_aspp: false
   use_band_attention: false
-  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"

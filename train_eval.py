@@ -375,11 +375,15 @@ def run_eval(cfg, seed, output_dir, splits=None):
         num_classes=cfg["data"]["num_classes"],
         **ds_kwargs,
     )
+    _nw = cfg["train"].get("num_workers", 4)
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg["train"]["batch_size"],
         shuffle=False,
-        num_workers=cfg["train"].get("num_workers", 4),
+        num_workers=_nw,
+        pin_memory=True,
+        persistent_workers=_nw > 0,
+        prefetch_factor=2 if _nw > 0 else None,
     )
 
     # Model

@@ -15,19 +15,17 @@
 
 set -e
 
-# 19 个 config：4 自研 + 6 SMP + Fang DLv3+ + 3 TopFormer + 3 SeaFormer + 2 PIDNet
+# 17 个 config：3 自研 + 6 SMP + 3 TopFormer + 3 SeaFormer + 2 PIDNet
 CONFIGS=(
     "baseline"
     "spconv_se"
     "input_band_se"
-    "global_branch"
     "smp_unet_resnet34"
     "smp_unetplusplus_resnet34"
     "smp_linknet_resnet34"
     "smp_manet_resnet34"
     "smp_deeplabv3plus_mobilenetv2"
     "smp_fpn_efficientnetb0"
-    "deeplabv3plus_fang"
     "topformer_t"
     "topformer_s"
     "topformer_b"
