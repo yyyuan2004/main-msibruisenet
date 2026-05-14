@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .modules import SEBlock, CBAMBlock
+from .modules import SEBlock
 
 
 class ConvBNReLU(nn.Module):
@@ -24,19 +24,14 @@ class DecoderBlock(nn.Module):
     """Single UNet decoder level.
 
     Operation:
-        Bilinear Upsample(2x) -> Concat(skip) -> [optional module] -> Conv-BN-ReLU x2
-
-    The optional module after concat:
-        - "none": standard double convolution
-        - "se":   SE block (channel attention)
-        - "cbam": CBAM block (channel + spatial attention)
+        Bilinear Upsample(2x) -> Concat(skip) -> [optional SE] -> Conv-BN-ReLU x2
 
     Args:
         in_channels: Channels from upsampled feature (before concat).
         skip_channels: Channels from skip connection.
         out_channels: Output channels for this decoder level.
-        skip_module: "none" / "se" / "cbam".
-        se_reduction: SE/CBAM reduction ratio.
+        skip_module: "none" / "se".
+        se_reduction: SE reduction ratio.
     """
 
     def __init__(self, in_channels, skip_channels, out_channels,
@@ -48,8 +43,6 @@ class DecoderBlock(nn.Module):
 
         if skip_module == "se":
             self.attn = SEBlock(concat_channels, reduction=se_reduction)
-        elif skip_module == "cbam":
-            self.attn = CBAMBlock(concat_channels, reduction=se_reduction)
         else:
             self.attn = None
 
@@ -73,14 +66,12 @@ class UNetDecoder(nn.Module):
         encoder_channels: List of encoder output channels [S1..S5].
         decoder_channels: List of decoder output channels [D1..D4].
         num_classes: Number of segmentation classes.
-        skip_module: "none" / "se" / "cbam".
-        se_reduction: SE/CBAM reduction ratio.
-        bottleneck_channels: Override encoder_channels[4] if ASPP is used upstream.
+        skip_module: "none" / "se".
+        se_reduction: SE reduction ratio.
     """
 
     def __init__(self, encoder_channels=None, decoder_channels=None,
-                 num_classes=2, skip_module="none", se_reduction=16,
-                 bottleneck_channels=None):
+                 num_classes=2, skip_module="none", se_reduction=16):
         super().__init__()
 
         if encoder_channels is None:
@@ -88,9 +79,7 @@ class UNetDecoder(nn.Module):
         if decoder_channels is None:
             decoder_channels = [128, 64, 32, 16]
 
-        bottleneck = bottleneck_channels if bottleneck_channels else encoder_channels[4]
-
-        in_ch = [bottleneck, decoder_channels[0], decoder_channels[1], decoder_channels[2]]
+        in_ch = [encoder_channels[4], decoder_channels[0], decoder_channels[1], decoder_channels[2]]
         skip_ch = [encoder_channels[3], encoder_channels[2], encoder_channels[1], encoder_channels[0]]
 
         self.blocks = nn.ModuleList([

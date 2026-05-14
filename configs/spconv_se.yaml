@@ -21,9 +21,7 @@ model:
   se_reduction: 16
   use_spectral_conv: true        # S1 后插入 1D 光谱卷积
   spectral_conv_kernel_size: 3
-  use_aspp: false
   use_band_attention: false
-  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"

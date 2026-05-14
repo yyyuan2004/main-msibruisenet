@@ -25,11 +25,9 @@ model:
   num_classes: 2
   encoder_name: "mobilenetv2"    # 可选: mobilenetv2 / mobilenetv3 / efficientnet_b0
   encoder_pretrained: true
-  skip_module: "none"            # none / se / cbam
+  skip_module: "none"            # none / se
   use_spectral_conv: false
-  use_aspp: false
   use_band_attention: false
-  use_global_branch: false
 
 data:
   data_dir: "/root/autodl-tmp/datasets/185_9bands"
