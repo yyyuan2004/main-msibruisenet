@@ -32,6 +32,60 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
+def _save_resume_checkpoint(path, epoch, model, optimizer, scheduler,
+                            best_miou, best_epoch, no_improve_count,
+                            epoch_logs, cfg):
+    """Save a single rolling checkpoint with full state for resume."""
+    cuda_rng = (torch.cuda.get_rng_state_all()
+                if torch.cuda.is_available() else None)
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "best_miou": best_miou,
+        "best_epoch": best_epoch,
+        "no_improve_count": no_improve_count,
+        "epoch_logs": epoch_logs,
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state": cuda_rng,
+        "numpy_rng_state": np.random.get_state(),
+        "python_rng_state": random.getstate(),
+        "config": cfg,
+    }, path)
+
+
+def _load_resume_checkpoint(path, model, optimizer, scheduler, device):
+    """Load resume checkpoint and return (start_epoch, best_miou, best_epoch,
+    no_improve_count, epoch_logs).
+    """
+    ckpt = torch.load(path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    if "scheduler_state_dict" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+    if "torch_rng_state" in ckpt:
+        torch.set_rng_state(ckpt["torch_rng_state"].cpu())
+    if ckpt.get("cuda_rng_state") is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.set_rng_state_all(ckpt["cuda_rng_state"])
+        except Exception:
+            pass
+    if "numpy_rng_state" in ckpt:
+        np.random.set_state(ckpt["numpy_rng_state"])
+    if "python_rng_state" in ckpt:
+        random.setstate(ckpt["python_rng_state"])
+
+    return (
+        ckpt["epoch"] + 1,
+        ckpt.get("best_miou", 0.0),
+        ckpt.get("best_epoch", 0),
+        ckpt.get("no_improve_count", 0),
+        ckpt.get("epoch_logs", []),
+    )
+
+
 def count_parameters(model):
     """Count trainable parameters in millions."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
@@ -218,6 +272,8 @@ def train(cfg, seed, output_dir, splits=None):
     # Checkpoint dir
     ckpt_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
+    last_ckpt_path = os.path.join(ckpt_dir, "last_checkpoint.pth")
+    training_done_flag = os.path.join(ckpt_dir, "training_done.flag")
 
     best_miou = 0.0
     best_epoch = 0
@@ -225,11 +281,56 @@ def train(cfg, seed, output_dir, splits=None):
     patience = train_cfg.get("early_stopping_patience", 0)  # 0=禁用
     no_improve_count = 0
     epoch_logs = []  # 记录每个epoch的指标，供后续绘图使用
+    start_epoch = 1
 
-    print(f"\nStarting training for {train_cfg['num_epochs']} epochs...")
+    # If a previous run already completed, skip training entirely.
+    if os.path.exists(training_done_flag):
+        print(f"\n[skip] training_done.flag found at {training_done_flag}, "
+              f"skipping training loop.")
+        log_path = os.path.join(output_dir, "training_log.json")
+        if os.path.exists(log_path):
+            with open(log_path, "r") as _f:
+                cached_logs = json.load(_f)
+            if cached_logs:
+                best_entry = max(cached_logs, key=lambda x: x.get("IoU_class1", 0.0))
+                best_miou = float(best_entry["IoU_class1"])
+                best_epoch = int(best_entry["epoch"])
+        return {
+            "experiment": cfg["experiment_name"],
+            "seed": seed,
+            "params_M": param_count,
+            "best_miou": best_miou,
+            "best_epoch": best_epoch,
+            "output_dir": output_dir,
+            "resumed_from_done": True,
+        }
+
+    # Resume from last_checkpoint.pth if present
+    if os.path.exists(last_ckpt_path):
+        try:
+            (start_epoch, best_miou, best_epoch,
+             no_improve_count, epoch_logs) = _load_resume_checkpoint(
+                last_ckpt_path, model, optimizer, scheduler, device)
+            print(f"\n[resume] Loaded {last_ckpt_path}: starting at epoch "
+                  f"{start_epoch} (best_IoU={best_miou:.4f} @ epoch {best_epoch}, "
+                  f"no_improve={no_improve_count})")
+            if start_epoch > train_cfg["num_epochs"]:
+                print(f"[resume] checkpoint epoch {start_epoch - 1} >= "
+                      f"num_epochs {train_cfg['num_epochs']}, nothing to do.")
+        except Exception as e:
+            print(f"\n[resume] Failed to load {last_ckpt_path}: {e}. "
+                  f"Starting from scratch.")
+            start_epoch = 1
+            best_miou = 0.0
+            best_epoch = 0
+            no_improve_count = 0
+            epoch_logs = []
+
+    print(f"\nStarting training for {train_cfg['num_epochs']} epochs "
+          f"(from epoch {start_epoch})...")
     if patience > 0:
         print(f"Early stopping enabled: patience={patience} epochs")
-    for epoch in range(1, train_cfg["num_epochs"] + 1):
+    for epoch in range(start_epoch, train_cfg["num_epochs"] + 1):
         t0 = time.time()
 
         # Train
@@ -290,6 +391,18 @@ def train(cfg, seed, output_dir, splits=None):
         else:
             no_improve_count += 1
 
+        # Rolling resume checkpoint: written every epoch (overwrite).
+        # On unexpected exit, the next launch picks up from here.
+        _save_resume_checkpoint(
+            last_ckpt_path, epoch, model, optimizer, scheduler,
+            best_miou, best_epoch, no_improve_count, epoch_logs, cfg,
+        )
+
+        # Also flush epoch_logs to disk every epoch so external monitors
+        # (and partial inspections) stay up-to-date.
+        with open(os.path.join(output_dir, "training_log.json"), "w") as _f:
+            json.dump(epoch_logs, _f, indent=2)
+
         if patience > 0 and no_improve_count >= patience:
             print(f"\nEarly stopping at epoch {epoch}: "
                   f"IoU(defect)未提升已达 {patience} epochs. "
@@ -322,6 +435,13 @@ def train(cfg, seed, output_dir, splits=None):
     log_path = os.path.join(output_dir, "training_log.json")
     with open(log_path, "w") as f:
         json.dump(epoch_logs, f, indent=2)
+
+    # Mark training as fully done so re-runs can skip the loop.
+    with open(training_done_flag, "w") as _f:
+        _f.write(f"completed_at={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        _f.write(f"best_miou={best_miou:.6f}\n")
+        _f.write(f"best_epoch={best_epoch}\n")
+        _f.write(f"final_epoch={epoch_logs[-1]['epoch'] if epoch_logs else 0}\n")
 
     print(f"\nTraining complete. Best IoU(defect): {best_miou:.4f} at epoch {best_epoch}")
     print(f"Checkpoints saved to: {ckpt_dir}")

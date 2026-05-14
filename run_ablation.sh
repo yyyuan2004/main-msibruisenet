@@ -119,7 +119,20 @@ for seed in "${SEEDS[@]}"; do
             OUTPUT_DIR="outputs/${config}_seed${seed}"
         fi
 
-        python train_eval.py \
+        # 断点续跑: 整体运行已完成则跳过 (省去 Python 启动开销)
+        # - 7:3 模式: ${OUTPUT_DIR}/done.flag 表示 train→eval→viz 全部完成
+        # - k-fold 模式: ${OUTPUT_DIR}/kfold_summary.json 表示所有 fold 已聚合
+        # 训练中断后再次运行时，train.py 会自动从 last_checkpoint.pth 继续
+        if [ "$KFOLD" -eq 0 ] && [ -f "${OUTPUT_DIR}/done.flag" ]; then
+            echo "[skip] ${OUTPUT_DIR}/done.flag exists, run already completed."
+            continue
+        fi
+        if [ "$KFOLD" -gt 0 ] && [ -f "${OUTPUT_DIR}/kfold_summary.json" ]; then
+            echo "[skip] ${OUTPUT_DIR}/kfold_summary.json exists, k-fold already aggregated."
+            continue
+        fi
+
+        python -u train_eval.py \
             --config "configs/${config}.yaml" \
             --seed "${seed}" \
             --output_dir "${OUTPUT_DIR}" \
