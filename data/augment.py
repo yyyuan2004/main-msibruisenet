@@ -85,8 +85,8 @@ class RandomCrop:
         if h <= self.crop_h or w <= self.crop_w:
             return _pack_return(image, mask, apple_mask)
 
-        top = np.random.randint(0, max(h - self.crop_h + 1, 1))
-        left = np.random.randint(0, max(w - self.crop_w + 1, 1))
+        top = np.random.randint(0, h - self.crop_h + 1)
+        left = np.random.randint(0, w - self.crop_w + 1)
         image = image[:, top:top + self.crop_h, left:left + self.crop_w].copy()
         mask = mask[top:top + self.crop_h, left:left + self.crop_w].copy()
         if apple_mask is not None:
