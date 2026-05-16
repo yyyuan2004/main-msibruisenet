@@ -32,6 +32,8 @@ SEARCH_CONFIGS=(
 )
 
 # 基础配置
+# Note: configs now use _base inheritance. The Python script uses
+# utils.config.load_config() to resolve the full config.
 BASE_CONFIG="configs/baseline.yaml"
 SEED=42
 EPOCHS=30

@@ -1,5 +1,5 @@
 """Evaluation script: compute metrics, confusion matrix, visualize segmentation results,
-and (if applicable) analyze band attention weights."""
+and generate TP/FP/FN error analysis overlays."""
 
 import argparse
 import os
@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+import matplotlib.patches as mpatches
 
 from data.dataset import MSIDataset, get_dataset_kwargs
 from data.augment import get_val_transforms
@@ -100,8 +101,6 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
     Layout per sample:
         Row 1: all individual bands of the raw image (9 bands in a row)
         Row 2: pseudo-color (raw) | pseudo-color (processed) | prediction | ground truth
-        If images_raw is provided and differs from images (sharpen active),
-        the second row shows the before/after comparison.
     """
     vis_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(vis_dir, exist_ok=True)
@@ -110,7 +109,7 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
     cmap = ListedColormap(["black", "red", "blue", "green", "yellow"][:max(preds.max() + 1, 2)])
 
     for i in range(num_samples):
-        img = images[i]  # preprocessed (C, H, W)
+        img = images[i]
         pred = preds[i]
         mask = masks[i]
         stem = stems[i]
@@ -121,7 +120,6 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
 
         fig, axes = plt.subplots(2, n_cols, figsize=(3 * n_cols, 7))
 
-        # Row 1: individual raw bands
         for b in range(n_bands_raw):
             axes[0, b].imshow(_normalize_band(img_raw[b]), cmap="gray", vmin=0, vmax=1)
             axes[0, b].set_title(f"Band {b}", fontsize=8)
@@ -129,7 +127,6 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
         for b in range(n_bands_raw, n_cols):
             axes[0, b].axis("off")
 
-        # Row 2: pseudo-color raw | pseudo-color processed | prediction | ground truth
         rgb_raw = np.stack([_normalize_band(img_raw[b]) for b in vis_bands], axis=-1)
         rgb_proc = np.stack([_normalize_band(img[b]) for b in vis_bands if b < img.shape[0]], axis=-1)
         if rgb_proc.shape[-1] < 3:
@@ -162,6 +159,89 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
     print(f"Saved {num_samples} visualizations to {vis_dir}")
 
 
+def visualize_error_analysis(images_raw, preds, masks, stems, output_dir,
+                             vis_bands=(0, 4, 8), num_samples=10):
+    """Generate per-sample TP/FP/FN error analysis overlay images.
+
+    Color coding (for defect class = 1):
+        - TP (green):  correctly predicted defect
+        - FP (red):    predicted defect but actually background
+        - FN (blue):   missed defect (GT=1, pred=0)
+        - TN:          transparent (background correctly predicted)
+
+    Output: one PNG per sample with pseudo-color background + colored overlay.
+    """
+    err_dir = os.path.join(output_dir, "error_analysis")
+    os.makedirs(err_dir, exist_ok=True)
+
+    num_samples = min(num_samples, len(images_raw))
+
+    for i in range(num_samples):
+        img_raw = images_raw[i]
+        pred = preds[i]
+        mask = masks[i]
+        stem = stems[i]
+
+        # Binary masks for defect class (class=1)
+        tp = (pred == 1) & (mask == 1)
+        fp = (pred == 1) & (mask == 0)
+        fn = (pred == 0) & (mask == 1)
+
+        # Build pseudo-color background
+        bands_avail = [b for b in vis_bands if b < img_raw.shape[0]]
+        while len(bands_avail) < 3:
+            bands_avail.append(bands_avail[-1] if bands_avail else 0)
+        bg = np.stack([_normalize_band(img_raw[b]) for b in bands_avail[:3]], axis=-1)
+
+        # Create RGBA overlay
+        H, W = mask.shape
+        overlay = np.zeros((H, W, 4), dtype=np.float32)
+        alpha = 0.55
+        overlay[tp] = [0.0, 0.8, 0.0, alpha]   # green = TP
+        overlay[fp] = [0.9, 0.0, 0.0, alpha]    # red   = FP
+        overlay[fn] = [0.0, 0.2, 0.9, alpha]    # blue  = FN
+
+        # Compute pixel counts for annotation
+        n_tp, n_fp, n_fn = int(tp.sum()), int(fp.sum()), int(fn.sum())
+        iou = n_tp / max(n_tp + n_fp + n_fn, 1)
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # (0) Pseudo-color input
+        axes[0].imshow(bg)
+        axes[0].set_title("Input (pseudo-color)", fontsize=11)
+        axes[0].axis("off")
+
+        # (1) Error overlay
+        axes[1].imshow(bg)
+        axes[1].imshow(overlay)
+        axes[1].set_title("Error Analysis", fontsize=11)
+        axes[1].axis("off")
+        legend_patches = [
+            mpatches.Patch(color=(0.0, 0.8, 0.0), label=f"TP ({n_tp:,} px)"),
+            mpatches.Patch(color=(0.9, 0.0, 0.0), label=f"FP ({n_fp:,} px)"),
+            mpatches.Patch(color=(0.0, 0.2, 0.9), label=f"FN ({n_fn:,} px)"),
+        ]
+        axes[1].legend(handles=legend_patches, loc="lower right", fontsize=8,
+                       framealpha=0.8)
+
+        # (2) GT vs Pred side-by-side in a single panel
+        combined = np.zeros((H, W, 3), dtype=np.float32)
+        combined[mask == 1] = [1.0, 1.0, 1.0]  # GT defect = white
+        combined[pred == 1, 0] = 1.0            # Pred defect adds red channel
+        axes[2].imshow(combined)
+        axes[2].set_title("GT (white) + Pred (red)", fontsize=11)
+        axes[2].axis("off")
+
+        fig.suptitle(f"{stem}  |  IoU={iou:.4f}  TP={n_tp}  FP={n_fp}  FN={n_fn}",
+                     fontsize=12, fontweight="bold")
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        fig.savefig(os.path.join(err_dir, f"{stem}_error.png"), dpi=150)
+        plt.close(fig)
+
+    print(f"Saved {num_samples} error analysis images to {err_dir}")
+
+
 def print_results(results, experiment_name):
     """Pretty-print evaluation results. Primary metric: Class 1 (defect) IoU."""
     iou_per_class = results["IoU_per_class"]
@@ -187,61 +267,6 @@ def print_results(results, experiment_name):
     print(f"{'=' * 60}\n")
 
 
-def analyze_band_weights(model, dataloader, device, output_dir, experiment_name):
-    """Extract and visualize InputBandSE per-image band attention weights.
-
-    Skipped silently if model does not have an InputBandSE band_attention.
-    """
-    if not hasattr(model, 'band_attention'):
-        return
-
-    print("\nAnalyzing band attention weights...")
-    model.eval()
-
-    all_weights = []
-    with torch.no_grad():
-        for images, _, _, _, _ in dataloader:
-            images_dev = images.to(device, non_blocking=True)
-            w = model.band_attention.get_weights(images_dev)  # (B, C)
-            all_weights.append(w)
-    all_weights = np.concatenate(all_weights, axis=0)  # (N, C)
-    avg_weights = all_weights.mean(axis=0)
-    std_weights = all_weights.std(axis=0)
-
-    print("  Band Importance Weights (dynamic, per-image statistics):")
-    print(f"  {'Band':>6} {'Mean':>8} {'Std':>8} {'Min':>8} {'Max':>8}")
-    for i in range(all_weights.shape[1]):
-        print(f"  Band {i+1:>2}: {avg_weights[i]:.4f}  {std_weights[i]:.4f}  "
-              f"{all_weights[:, i].min():.4f}  {all_weights[:, i].max():.4f}")
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bands = range(1, len(avg_weights) + 1)
-    bars = ax.bar(bands, avg_weights, yerr=std_weights, capsize=4,
-                  color='steelblue', edgecolor='black', alpha=0.8)
-    for bar_item in bars:
-        yval = bar_item.get_height()
-        ax.text(bar_item.get_x() + bar_item.get_width() / 2, yval + 0.01,
-                f'{yval:.3f}', ha='center', va='bottom', fontsize=9)
-    ax.set_xlabel('Band Index', fontsize=12)
-    ax.set_ylabel('Weight (mean +/- std)', fontsize=12)
-    ax.set_title(f'Dynamic Band Importance ({experiment_name})', fontsize=14)
-    ax.set_xticks(bands)
-    ax.set_ylim(0, min(max(avg_weights) + 0.15, 1.0))
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-    with open(os.path.join(output_dir, "band_weights.txt"), "w") as f:
-        f.write(f"Experiment: {experiment_name} (InputBandSE dynamic)\n\n")
-        f.write(f"{'Band':<10} {'Mean':>10} {'Std':>10} {'Min':>10} {'Max':>10}\n")
-        f.write("-" * 50 + "\n")
-        for i in range(all_weights.shape[1]):
-            f.write(f"Band {i+1:<4}  {avg_weights[i]:>10.6f} {std_weights[i]:>10.6f} "
-                    f"{all_weights[:, i].min():>10.6f} {all_weights[:, i].max():>10.6f}\n")
-
-    fig.savefig(os.path.join(output_dir, "band_weights.png"), dpi=200, bbox_inches='tight')
-    plt.close(fig)
-    print(f"  Saved band_weights.png and band_weights.txt to {output_dir}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Evaluate segmentation model")
     parser.add_argument("--checkpoint", type=str, required=True,
@@ -263,8 +288,8 @@ def main():
 
     # Load config
     if args.config:
-        with open(args.config, "r") as f:
-            cfg = yaml.safe_load(f)
+        from utils.config import load_config
+        cfg = load_config(args.config)
     elif "config" in checkpoint:
         cfg = checkpoint["config"]
     else:
@@ -312,9 +337,6 @@ def main():
     model = build_model(cfg).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    # Band attention weights analysis (auto-skipped if model has no band_attention)
-    analyze_band_weights(model, dataloader, device, args.output_dir, cfg["experiment_name"])
-
     # Metrics
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)
@@ -348,6 +370,12 @@ def main():
         all_images, all_preds, all_masks, all_stems,
         args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis,
         images_raw=all_images_raw,
+    )
+
+    # TP/FP/FN error analysis overlay
+    visualize_error_analysis(
+        all_images_raw, all_preds, all_masks, all_stems,
+        args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis,
     )
 
     print(f"Results saved to {args.output_dir}")

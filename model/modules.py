@@ -3,7 +3,6 @@
 Modules:
     - SEBlock: Channel attention via global average pooling (Squeeze-and-Excitation).
     - SpectralConv1D: 1D convolution along the spectral (band) dimension.
-    - InputBandSE: Per-image dynamic band weighting via GAP+FC.
 """
 
 import torch
@@ -63,33 +62,3 @@ class SpectralConv1D(nn.Module):
         x_flat = x_flat.reshape(B, H * W, C).permute(0, 2, 1)
         x_out = x_flat.view(B, C, H, W)
         return self.relu(self.bn(x_out + x))
-
-
-class InputBandSE(nn.Module):
-    """Input-level Squeeze-and-Excitation for spectral band weighting.
-
-    Per-image dynamic weights via GAP -> FC -> ReLU -> FC -> Sigmoid.
-    """
-
-    def __init__(self, num_bands=9, reduction=2):
-        super().__init__()
-        mid = max(num_bands // reduction, 2)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Conv2d(num_bands, mid, 1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid, num_bands, 1, bias=True),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        w = self.pool(x)
-        w = self.fc(w)
-        return x * w
-
-    def get_weights(self, x):
-        """Return per-image band weights as (B, C) numpy array."""
-        with torch.no_grad():
-            w = self.pool(x)
-            w = self.fc(w)
-        return w.squeeze(-1).squeeze(-1).cpu().numpy()

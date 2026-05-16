@@ -1,25 +1,23 @@
 #!/bin/bash
 # ==============================================================================
-# Ablation Study Runner (自动化消融实验)
+# Ablation Study Runner
 #
-# 运行所有 config × 多个随机种子的完整实验流程：
-#   每个 seed 下跑完所有 config，再切换下一个 seed。
-#   每个 (config, seed) 组合自动完成: 训练 → 评估(val set) → 指标曲线图
+# Runs all config x seed experiments sequentially:
+#   Each (config, seed) does: train -> eval -> metric curves -> error analysis
 #
-# 用法:
-#   bash run_ablation.sh                          # 7:3 划分（默认）
-#   bash run_ablation.sh --kfold 5                # 5-fold 交叉验证
-#   bash run_ablation.sh --vis_augment            # 7:3 + 生成增强可视化
-#   bash run_ablation.sh --kfold 5 --vis_augment  # 5-fold + 增强可视化
+# Usage:
+#   bash run_ablation.sh                          # 7:3 split (default)
+#   bash run_ablation.sh --kfold 5                # 5-fold cross-validation
+#   bash run_ablation.sh --vis_augment            # 7:3 + augmentation viz
+#   bash run_ablation.sh --kfold 5 --vis_augment  # 5-fold + augment viz
 # ==============================================================================
 
 set -e
 
-# 17 个 config：3 自研 + 6 SMP + 3 TopFormer + 3 SeaFormer + 2 PIDNet
+# 15 configs: 2 custom + 6 SMP + 3 TopFormer + 3 SeaFormer + 2 PIDNet
 CONFIGS=(
     "baseline"
     "spconv_se"
-    "input_band_se"
     "smp_unet_resnet34"
     "smp_unetplusplus_resnet34"
     "smp_linknet_resnet34"
@@ -38,7 +36,7 @@ CONFIGS=(
 
 SEEDS=(42 123 456)
 
-# 解析命令行参数
+# Parse CLI arguments
 KFOLD=0
 VIS_AUGMENT=""
 while [[ $# -gt 0 ]]; do
@@ -67,17 +65,16 @@ fi
 
 echo "=============================================="
 echo " MSI Bruise Ablation Study (Automated)"
-echo " Configs: ${CONFIGS[*]}"
+echo " Configs: ${#CONFIGS[@]}"
 echo " Seeds:   ${SEEDS[*]}"
 echo " Mode:    ${MODE_DESC}"
 echo " Strategy: all configs per seed, then next seed"
 echo "=============================================="
 
-# Step 1: 光谱预分析 (仅运行一次)
+# Step 1: Spectral pre-analysis (one-time)
 DATA_DIR=$(python -c "
-import yaml
-with open('configs/baseline.yaml') as f:
-    cfg = yaml.safe_load(f)
+from utils.config import load_config
+cfg = load_config('configs/baseline.yaml')
 print(cfg['data']['data_dir'])
 " 2>/dev/null || echo "")
 
@@ -90,7 +87,7 @@ if [ -n "$DATA_DIR" ] && [ -d "${DATA_DIR}/images" ]; then
     echo "[Pre-analysis] Done."
 fi
 
-# Step 2: 按 seed 分组，每个 seed 下依次跑完所有 config
+# Step 2: Train & eval for each (seed, config)
 FIRST_RUN=true
 for seed in "${SEEDS[@]}"; do
     echo ""
@@ -105,7 +102,6 @@ for seed in "${SEEDS[@]}"; do
         echo "=============================================="
 
         EXTRA_FLAGS=""
-        # 增强可视化只在第一次运行时生成
         if [ "$FIRST_RUN" = true ] && [ -n "$VIS_AUGMENT" ]; then
             EXTRA_FLAGS="--vis_augment"
             FIRST_RUN=false
@@ -117,10 +113,7 @@ for seed in "${SEEDS[@]}"; do
             OUTPUT_DIR="outputs/${config}_seed${seed}"
         fi
 
-        # 断点续跑: 整体运行已完成则跳过 (省去 Python 启动开销)
-        # - 7:3 模式: ${OUTPUT_DIR}/done.flag 表示 train→eval→viz 全部完成
-        # - k-fold 模式: ${OUTPUT_DIR}/kfold_summary.json 表示所有 fold 已聚合
-        # 训练中断后再次运行时，train.py 会自动从 last_checkpoint.pth 继续
+        # Skip if already completed
         if [ "$KFOLD" -eq 0 ] && [ -f "${OUTPUT_DIR}/done.flag" ]; then
             echo "[skip] ${OUTPUT_DIR}/done.flag exists, run already completed."
             continue
@@ -139,13 +132,19 @@ for seed in "${SEEDS[@]}"; do
     done
 done
 
-# Step 3: 汇总结果（仅 7:3 模式下，k-fold 模式各 run 已自带聚合）
+# Step 3: Aggregate results + generate comparison plots
 if [ "$KFOLD" -eq 0 ]; then
     echo ""
     echo "=============================================="
     echo " Aggregating results..."
     echo "=============================================="
     python aggregate_results.py || echo "(aggregate_results.py skipped/failed)"
+
+    echo ""
+    echo "=============================================="
+    echo " Generating comparison plots..."
+    echo "=============================================="
+    python scripts/plot_ablation.py || echo "(plot_ablation.py skipped/failed)"
 fi
 
 echo ""

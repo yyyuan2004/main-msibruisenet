@@ -552,8 +552,9 @@ def main():
                         default="outputs/band_range_search")
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from utils.config import load_config
+    cfg = load_config(args.config)
 
     if args.data_dir:
         cfg["data"]["data_dir"] = args.data_dir
