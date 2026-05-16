@@ -1,15 +1,5 @@
-# ============================================================================
-# Config: spconv_se — +SpectralConv1D +SE
-# ----------------------------------------------------------------------------
-# 工作流（在 baseline 基础上的差异）：
-#   [5a] Encoder   : MobileNetV2，S1 (16ch, 1/2 分辨率) 输出后插入 1D 光谱卷积
-#                   (SpectralConv1D, kernel=3)，在通道维度对 9 个物理波段的
-#                   特征做局部相关建模
-#   [5b] Decoder   : 每个 skip connection 位置插入 SE block (channel attention,
-#                   reduction=16)，对拼接后的特征做通道加权
-#   其余部分与 baseline 完全一致：
-#     数据 9 波段 → 7:3 划分 → 空间增强 → AdamW+Cosine → CE+Dice loss
-# ============================================================================
+# +SpConv+SE: MobileNetV2-UNet with 1D SpectralConv + SE skip connections
+_base: _defaults.yaml
 
 experiment_name: "spconv_se"
 
@@ -17,53 +7,7 @@ model:
   num_classes: 2
   encoder_name: "mobilenetv2"
   encoder_pretrained: true
-  skip_module: "se"              # 每个 skip 位置加 SE
+  skip_module: "se"
   se_reduction: 16
-  use_spectral_conv: true        # S1 后插入 1D 光谱卷积
+  use_spectral_conv: true
   spectral_conv_kernel_size: 3
-  use_band_attention: false
-
-data:
-  data_dir: "/root/autodl-tmp/datasets/185_9bands"
-  image_dir: "images"
-  mask_dir: "masks"
-  num_channels: 4
-  num_classes: 2
-  image_size: 512
-  crop_size: 384
-  band_indices: [0, 2, 4, 5]
-  use_sharpen: false
-  sharpen_sigma: 1.0
-  sharpen_alpha: 1.5
-
-train:
-  batch_size: 32
-  num_epochs: 500
-  optimizer: "adamw"
-  lr: 5.0e-4
-  weight_decay: 1.0e-4
-  scheduler: "cosine"
-  eta_min: 1.0e-6
-  use_warmup: false
-  warmup_epochs: 5
-  warmup_start_factor: 0.01
-  loss: "ce_dice"
-  ce_weight: 0.5
-  dice_weight: 0.5
-  save_interval: 99999
-  early_stopping_patience: 50
-  val_interval: 1
-  num_workers: 4
-  pin_memory: true
-
-  augment:
-    horizontal_flip: true
-    vertical_flip: true
-    random_rotation: true
-    elastic_transform: false
-    gaussian_noise: false
-
-eval:
-  visualize: true
-  num_vis_samples: 10
-  vis_bands: [0, 4, 8]

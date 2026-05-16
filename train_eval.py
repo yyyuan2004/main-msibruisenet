@@ -42,7 +42,7 @@ from data.augment import (
 from data.split import get_data_splits, get_kfold_splits
 from model.model import build_model
 from utils.metrics import SegmentationMetrics
-from eval import evaluate, plot_confusion_matrix, visualize_predictions, print_results, analyze_band_weights, _normalize_band
+from eval import evaluate, plot_confusion_matrix, visualize_predictions, visualize_error_analysis, print_results, _normalize_band
 
 
 # ---------------------------------------------------------------------------
@@ -393,9 +393,6 @@ def run_eval(cfg, seed, output_dir, splits=None):
     eval_dir = os.path.join(output_dir, "eval_results")
     os.makedirs(eval_dir, exist_ok=True)
 
-    # Band attention analysis
-    analyze_band_weights(model, val_loader, device, eval_dir, cfg["experiment_name"])
-
     # Metrics
     num_classes = cfg["data"]["num_classes"]
     metrics = SegmentationMetrics(num_classes=num_classes)
@@ -429,6 +426,12 @@ def run_eval(cfg, seed, output_dir, splits=None):
         all_images, all_preds, all_masks, all_stems,
         eval_dir, vis_bands=vis_bands, num_samples=num_vis,
         images_raw=all_images_raw,
+    )
+
+    # TP/FP/FN error analysis overlay
+    visualize_error_analysis(
+        all_images_raw, all_preds, all_masks, all_stems,
+        eval_dir, vis_bands=vis_bands, num_samples=num_vis,
     )
 
     print(f"Evaluation results saved to {eval_dir}")
@@ -712,9 +715,9 @@ def main():
                              "If >0, runs k folds and aggregates results.")
     args = parser.parse_args()
 
-    # Load config
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    # Load config (with _base inheritance)
+    from utils.config import load_config
+    cfg = load_config(args.config)
 
     experiment_name = cfg["experiment_name"]
 

@@ -10,7 +10,6 @@ from collections import defaultdict
 CONFIGS = [
     "baseline",
     "spconv_se",
-    "input_band_se",
     "smp_unet_resnet34",
     "smp_unetplusplus_resnet34",
     "smp_linknet_resnet34",
@@ -29,7 +28,6 @@ CONFIGS = [
 CONFIG_DISPLAY = {
     "baseline": "baseline",
     "spconv_se": "+SpConv+SE",
-    "input_band_se": "+InputBandSE",
     "smp_unet_resnet34": "smp-UNet-R34",
     "smp_unetplusplus_resnet34": "smp-UNet++-R34",
     "smp_linknet_resnet34": "smp-LinkNet-R34",
@@ -81,13 +79,11 @@ def load_results():
 def count_params(config):
     """Count model parameters for a config."""
     try:
-        import yaml
-        import torch
+        from utils.config import load_config
         from model.model import build_model
 
         config_path = os.path.join("configs", f"{config}.yaml")
-        with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
+        cfg = load_config(config_path)
 
         model = build_model(cfg)
         params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -126,7 +122,7 @@ def main():
             if values:
                 mean = np.mean(values) * 100
                 std = np.std(values) * 100
-                row += f" | {mean:>6.1f} ± {std:>4.1f}  "
+                row += f" | {mean:>6.1f} +/- {std:>4.1f}  "
             else:
                 row += f" | {'N/A':>16}"
 
@@ -145,7 +141,7 @@ def main():
         f.write(table + "\n")
         f.write("=" * len(lines[0]) + "\n")
         f.write(f"\nSeeds: {SEEDS}\n")
-        f.write("Values: mean ± std over 3 seeds\n")
+        f.write("Values: mean +/- std over 3 seeds\n")
 
     print(f"\nTable saved to {os.path.join(output_dir, 'ablation_table.txt')}")
 

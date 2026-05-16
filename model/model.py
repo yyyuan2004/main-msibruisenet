@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from .encoder import MobileNetV2Encoder, MobileNetV3Encoder, EfficientNetB0Encoder
 from .decoder import UNetDecoder
-from .modules import SpectralConv1D, InputBandSE
+from .modules import SpectralConv1D
 
 
 ENCODERS = {
@@ -30,21 +30,13 @@ class SegmentationModel(nn.Module):
         - Encoder: MobileNetV2 / EfficientNet-B0 / MobileNetV3
         - Skip modules: none / se
         - SpectralConv1D after S1 (optional)
-        - InputBandSE before encoder (optional)
     """
 
     def __init__(self, num_classes=2, in_channels=9,
                  encoder_name="mobilenetv2", pretrained=True,
                  skip_module="none", se_reduction=16,
-                 use_spectral_conv=False, spectral_conv_kernel_size=3,
-                 use_band_attention=False, band_se_reduction=2):
+                 use_spectral_conv=False, spectral_conv_kernel_size=3):
         super().__init__()
-
-        self.use_band_attention = use_band_attention
-        if use_band_attention:
-            self.band_attention = InputBandSE(
-                num_bands=in_channels, reduction=band_se_reduction,
-            )
 
         # Encoder
         encoder_cls = ENCODERS.get(encoder_name)
@@ -75,9 +67,6 @@ class SegmentationModel(nn.Module):
 
     def forward(self, x):
         input_size = x.shape[2:]
-
-        if self.use_band_attention:
-            x = self.band_attention(x)
 
         features = self.encoder(x)  # [S1, S2, S3, S4, S5]
 
@@ -134,6 +123,4 @@ def build_model(cfg):
         se_reduction=model_cfg.get("se_reduction", 16),
         use_spectral_conv=model_cfg.get("use_spectral_conv", False),
         spectral_conv_kernel_size=model_cfg.get("spectral_conv_kernel_size", 3),
-        use_band_attention=model_cfg.get("use_band_attention", False),
-        band_se_reduction=model_cfg.get("band_se_reduction", 2),
     )
