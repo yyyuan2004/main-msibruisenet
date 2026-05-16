@@ -82,7 +82,7 @@ class RandomCrop:
 
     def __call__(self, image, mask, apple_mask=None):
         _, h, w = image.shape
-        if h <= self.crop_h and w <= self.crop_w:
+        if h <= self.crop_h or w <= self.crop_w:
             return _pack_return(image, mask, apple_mask)
 
         top = np.random.randint(0, max(h - self.crop_h + 1, 1))
