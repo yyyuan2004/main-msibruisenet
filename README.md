@@ -2,7 +2,8 @@
 
 # MSI-Bruise-Seg: Apple Multispectral Image Bruise Segmentation
 
-Pixel-level semantic segmentation of apple bruise defects from 9-band near-infrared multispectral images (MSI). Lightweight MobileNetV2-UNet backbone with plug-in modules (SpectralConv1D, SE) compared against 14 external reference architectures under unified training configuration.
+Pixel-level semantic segmentation of apple bruise defects from 9-band near-infrared multispectral images (MSI).
+基于近红外多光谱图像（MSI）的苹果瘀伤（defect）像素级语义分割项目。
 
 ---
 

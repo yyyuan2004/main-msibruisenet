@@ -53,6 +53,19 @@ def unsharp_mask(image, sigma=1.0, alpha=1.5):
     return out
 
 
+def _assert_same_hw(stem, image, mask, apple_mask, stage):
+    """Fail fast when image/defect mask/apple mask spatial sizes diverge."""
+    image_hw = image.shape[-2:]
+    mask_hw = mask.shape[-2:]
+    apple_hw = apple_mask.shape[-2:]
+    if image_hw != mask_hw or image_hw != apple_hw:
+        raise ValueError(
+            f"Spatial size mismatch for '{stem}' at {stage}: "
+            f"image={image_hw}, mask={mask_hw}, apple_mask={apple_hw}. "
+            "Check whether images/, masks/, and whole/ were generated at the same resolution."
+        )
+
+
 class MSIDataset(Dataset):
     """Dataset for loading 9-channel .npy spectral images and corresponding masks.
 
@@ -60,7 +73,7 @@ class MSIDataset(Dataset):
     - image: preprocessed (possibly band-selected, sharpened, LCN, PCA) and augmented tensor.
     - mask: ground truth defect mask tensor.
     - image_raw: original full-band image tensor (before any preprocessing), for visualization.
-    - apple_mask: binary apple region mask (1=apple, 0=background), shape (H, W).
+    - apple_mask: binary apple region mask (1=apple, 0=background), transformed in sync with image.
     - stem: file name stem string.
     """
 
@@ -204,10 +217,12 @@ class MSIDataset(Dataset):
 
         # Load mask: (H, W)
         mask = self._load_mask(stem)
+        _assert_same_hw(stem, image, mask, apple_mask, stage="before transform")
 
-        # Apply spatial transforms (both image and mask; apple_mask syncs with mask)
+        # Apply spatial transforms; image, defect mask, and apple foreground mask must stay aligned.
         if self.transform is not None:
-            image, mask = self.transform(image, mask)
+            image, mask, apple_mask = self.transform(image, mask, apple_mask)
+            _assert_same_hw(stem, image, mask, apple_mask, stage="after transform")
 
         # Convert to tensors
         image = torch.from_numpy(np.ascontiguousarray(image)).float()
