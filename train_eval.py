@@ -428,9 +428,10 @@ def run_eval(cfg, seed, output_dir, splits=None):
         images_raw=all_images_raw,
     )
 
-    # TP/FP/FN error analysis overlay
+    # TP/FP/FN error analysis overlay (use processed images — same spatial
+    # dimensions as preds/masks, not the pre-transform raw images)
     visualize_error_analysis(
-        all_images_raw, all_preds, all_masks, all_stems,
+        all_images, all_preds, all_masks, all_stems,
         eval_dir, vis_bands=vis_bands, num_samples=num_vis,
     )
 

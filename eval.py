@@ -159,9 +159,13 @@ def visualize_predictions(images, preds, masks, stems, output_dir,
     print(f"Saved {num_samples} visualizations to {vis_dir}")
 
 
-def visualize_error_analysis(images_raw, preds, masks, stems, output_dir,
+def visualize_error_analysis(images, preds, masks, stems, output_dir,
                              vis_bands=(0, 4, 8), num_samples=10):
     """Generate per-sample TP/FP/FN error analysis overlay images.
+
+    IMPORTANT: ``images`` must be the *processed* (post-transform) images,
+    NOT images_raw.  preds and masks are computed on the transformed images,
+    so the spatial dimensions must match.
 
     Color coding (for defect class = 1):
         - TP (green):  correctly predicted defect
@@ -174,10 +178,10 @@ def visualize_error_analysis(images_raw, preds, masks, stems, output_dir,
     err_dir = os.path.join(output_dir, "error_analysis")
     os.makedirs(err_dir, exist_ok=True)
 
-    num_samples = min(num_samples, len(images_raw))
+    num_samples = min(num_samples, len(images))
 
     for i in range(num_samples):
-        img_raw = images_raw[i]
+        img_raw = images[i]
         pred = preds[i]
         mask = masks[i]
         stem = stems[i]
@@ -372,9 +376,10 @@ def main():
         images_raw=all_images_raw,
     )
 
-    # TP/FP/FN error analysis overlay
+    # TP/FP/FN error analysis overlay (use processed images, not raw —
+    # preds/masks are at post-transform resolution)
     visualize_error_analysis(
-        all_images_raw, all_preds, all_masks, all_stems,
+        all_images, all_preds, all_masks, all_stems,
         args.output_dir, vis_bands=vis_bands, num_samples=args.num_vis,
     )
 
